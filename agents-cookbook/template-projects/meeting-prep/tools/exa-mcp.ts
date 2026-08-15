@@ -1,0 +1,7 @@
+import { mcpTool } from '@agent-fabric/agents-sdk';
+
+export const exaMcpTool = mcpTool({
+  id: 'tt16hvm8acqexsgnn9584',
+  name: 'Exa',
+  serverUrl: 'https://mcp.exa.ai/mcp',
+});

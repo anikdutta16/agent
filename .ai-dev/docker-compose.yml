@@ -1,0 +1,57 @@
+services:
+  proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.proxy
+    volumes:
+      - ./squid.conf:/etc/squid/squid.conf:ro
+      - squid-certs:/certs
+    networks:
+      - external-net
+      - internal-net
+    restart: unless-stopped
+    entrypoint: ["/bin/bash", "-c", "cp /etc/squid/ssl/squid-ca.crt /certs/ && chmod 644 /certs/squid-ca.crt && exec squid -N"]
+
+  sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - HTTP_PROXY=http://proxy:3128
+      - HTTPS_PROXY=http://proxy:3128
+      - http_proxy=http://proxy:3128
+      - https_proxy=http://proxy:3128
+      - NO_PROXY=localhost,127.0.0.1
+      - NODE_EXTRA_CA_CERTS=/certs/squid-ca.crt
+      - REQUESTS_CA_BUNDLE=/certs/squid-ca.crt
+      - SSL_CERT_FILE=/certs/squid-ca.crt
+      # API key — required for Claude Code
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # GitHub token — optional, only if pushing/creating PRs from inside container
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+    volumes:
+      - ..:/workspace
+      - claude-data:/home/agent/.claude
+      - squid-certs:/certs:ro
+      - ${HOME}/.claude/plugins:/host-plugins:ro
+    working_dir: /workspace
+    networks:
+      - internal-net
+    depends_on:
+      - proxy
+    stdin_open: true
+    tty: true
+    deploy:
+      resources:
+        limits:
+          memory: 14G
+
+networks:
+  internal-net:
+    internal: true
+  external-net:
+    internal: false
+
+volumes:
+  claude-data:
+  squid-certs:

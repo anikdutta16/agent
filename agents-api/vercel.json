@@ -1,0 +1,52 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": {
+    "deploymentEnabled": {
+      "main": false
+    }
+  },
+  "ignoreCommand": "bash ../../../scripts/vercel-skip-unless-changed.sh ..",
+  "framework": "hono",
+  "installCommand": "pnpm install",
+  "buildCommand": "turbo build --filter=@agent-fabric/agents-api && pnpm --dir ../ prepack",
+  "outputDirectory": "dist",
+  "functions": {
+    "index.js": {
+      "maxDuration": 800,
+      "includeFiles": ".well-known/**/*",
+      "experimentalTriggers": [
+        {
+          "type": "queue/v1beta",
+          "topic": "__wkf_workflow_*",
+          "consumer": "default"
+        },
+        {
+          "type": "queue/v1beta",
+          "topic": "__wkf_step_*",
+          "consumer": "default"
+        },
+        {
+          "type": "queue/v1beta",
+          "topic": "webhook-delivery",
+          "consumer": "default"
+        }
+      ]
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/cleanup-stream-chunks",
+      "schedule": "0 0 * * *"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+        { "key": "X-XSS-Protection", "value": "0" }
+      ]
+    }
+  ]
+}

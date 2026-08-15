@@ -1,0 +1,59 @@
+'use client';
+
+import { Monitor, Moon, Sun } from 'lucide-react';
+import { useTheme } from 'next-themes';
+import type { ComponentProps, FC, MouseEvent } from 'react';
+import type { ToasterProps } from 'sonner';
+import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+
+type ThemeValue = NonNullable<ToasterProps['theme']>;
+
+export const ThemeMap: Record<ThemeValue, FC<ComponentProps<'svg'>>> = {
+  light: Sun,
+  dark: Moon,
+  system: Monitor,
+};
+
+export const ThemeToggle: FC = () => {
+  const { setTheme } = useTheme();
+
+  function handleTheme(event: MouseEvent<HTMLDivElement>) {
+    const newTheme = event.currentTarget.dataset.theme as ThemeValue;
+    setTheme(newTheme);
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground text-sidebar-foreground/80 dark:text-sidebar-foreground"
+        >
+          <Sun className="dark:hidden" />
+          <Moon className="not-dark:hidden" />
+          <span className="sr-only">Toggle theme</span>
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {Object.entries(ThemeMap).map(([theme, Comp]) => (
+          <DropdownMenuItem
+            key={theme}
+            data-theme={theme}
+            onClick={handleTheme}
+            className="capitalize gap-4"
+          >
+            <Comp />
+            {theme}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+};

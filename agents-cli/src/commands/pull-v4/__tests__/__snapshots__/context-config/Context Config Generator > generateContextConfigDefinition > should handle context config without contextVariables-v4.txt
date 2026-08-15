@@ -1,0 +1,5 @@
+import { contextConfig } from '@agent-fabric/agents-core';
+
+export const headeronlycontext = contextConfig({
+  headers: myheaders,
+});

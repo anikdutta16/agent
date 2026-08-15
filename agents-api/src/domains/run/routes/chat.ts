@@ -1,0 +1,765 @@
+import { performance } from 'node:perf_hooks';
+import {
+  APPROVAL_NEEDED_EVENT,
+  APPROVAL_RESOLVED_EVENT,
+  buildConversationMetadata,
+  type CredentialStoreRegistry,
+  createApiError,
+  createMessage,
+  createOrGetConversation,
+  errorSchemaFactory,
+  type FullExecutionContext,
+  generateId,
+  getActiveAgentForConversation,
+  getConversationId,
+  isUniqueConstraintError,
+  PartSchema,
+  setActiveAgentForConversation,
+} from '@agent-fabric/agents-core';
+import { FileSecurityError, PdfUrlIngestionError } from '@agent-fabric/agents-core/external-fetch';
+import { createProtectedRoute, inheritedRunApiKeyAuth } from '@agent-fabric/agents-core/middleware';
+import { OpenAPIHono, z } from '@hono/zod-openapi';
+import { context as otelContext, propagation, trace } from '@opentelemetry/api';
+import { HTTPException } from 'hono/http-exception';
+import { stream, streamSSE } from 'hono/streaming';
+import { start } from 'workflow/api';
+import runDbClient from '../../../data/db/runDbClient';
+import { flushBatchProcessor } from '../../../instrumentation';
+import { getLogger } from '../../../logger';
+import { contextValidationMiddleware, handleContextResolution } from '../context';
+import { ExecutionHandler } from '../handlers/executionHandler';
+import { buildMessageAttachmentToolCallId } from '../services/blob-storage/attachment-artifacts';
+import {
+  buildPersistedMessageContent,
+  inlineExternalPdfUrlParts,
+} from '../services/blob-storage/file-upload-helpers';
+import {
+  emitConversationWebhook,
+  prefetchWebhookDestinations,
+} from '../services/WebhookDeliveryService';
+import { toolApprovalUiBus } from '../session/ToolApprovalUiBus';
+import { createSSEStreamHelper } from '../stream/stream-helpers';
+import {
+  registerTtftRecorder,
+  TtftRecorder,
+  unregisterTtftRecorder,
+} from '../stream/ttft-recorder';
+import type { Message } from '../types/chat';
+import { FileContentItemSchema, ImageContentItemSchema, MessageIdSchema } from '../types/chat';
+import { getUserIdFromContext } from '../types/executionContext';
+import { errorOp } from '../utils/agent-operations';
+import { extractTextFromParts, getMessagePartsFromOpenAIContent } from '../utils/message-parts';
+import {
+  isAutoMintIdentity,
+  parseAgentFabricJsonHeader,
+  stripIdentificationType,
+} from '../utils/user-properties';
+import { agentExecutionWorkflow } from '../workflow/functions/agentExecution';
+
+type AppVariables = {
+  credentialStores: CredentialStoreRegistry;
+  executionContext: FullExecutionContext;
+  requestBody?: any;
+};
+
+const app = new OpenAPIHono<{ Variables: AppVariables }>();
+const logger = getLogger('completionsHandler');
+
+const chatCompletionsRoute = createProtectedRoute({
+  method: 'post',
+  path: '/completions',
+  tags: ['Chat'],
+  summary: 'Create chat completion',
+  description:
+    'Creates a new chat completion with streaming SSE response using the configured agent',
+  security: [{ bearerAuth: [] }],
+  permission: inheritedRunApiKeyAuth(),
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: z.object({
+            model: z.string().describe('The model to use for the completion'),
+            messages: z
+              .array(
+                z.object({
+                  role: z
+                    .enum(['system', 'user', 'assistant', 'function', 'tool'])
+                    .describe('The role of the message'),
+                  content: z
+                    .union([
+                      z.string(),
+                      z.array(
+                        z.discriminatedUnion('type', [
+                          z.object({
+                            type: z.literal('text'),
+                            text: z.string(),
+                          }),
+                          ImageContentItemSchema,
+                          FileContentItemSchema,
+                        ])
+                      ),
+                    ])
+                    .describe('The message content'),
+                  name: z.string().optional().describe('The name of the message sender'),
+                })
+              )
+              .describe('The conversation messages'),
+            temperature: z.number().optional().describe('Controls randomness (0-1)'),
+            top_p: z.number().optional().describe('Controls nucleus sampling'),
+            n: z.number().optional().describe('Number of completions to generate'),
+            stream: z.boolean().optional().describe('Whether to stream the response'),
+            max_tokens: z.number().optional().describe('Maximum tokens to generate'),
+            presence_penalty: z.number().optional().describe('Presence penalty (-2 to 2)'),
+            frequency_penalty: z.number().optional().describe('Frequency penalty (-2 to 2)'),
+            logit_bias: z.record(z.string(), z.number()).optional().describe('Token logit bias'),
+            user: z.string().optional().describe('User identifier'),
+            conversationId: z.string().optional().describe('Conversation ID for multi-turn chat'),
+            messageId: MessageIdSchema.optional().describe(
+              'Client-supplied user message id. Optional; server generates one if omitted. Persisted as messages.id so events keyed to this id can join back to the message row. Constrained to the server id alphabet ([A-Za-z0-9_-]).'
+            ),
+            tools: z.array(z.string()).optional().describe('Available tools'),
+            runConfig: z.record(z.string(), z.unknown()).optional().describe('Run configuration'),
+            executionMode: z
+              .enum(['classic', 'durable'])
+              .optional()
+              .describe(
+                'Override the agent execution mode for this request. Takes precedence over the agent config default. Falls back to classic if unset.'
+              ),
+            headers: z
+              .record(z.string(), z.unknown())
+              .optional()
+              .describe(
+                'Headers data for template processing (validated against context config schema)'
+              ),
+            userProperties: z
+              .record(z.string(), z.unknown())
+              .optional()
+              .describe('User properties to associate with the conversation'),
+            properties: z
+              .record(z.string(), z.unknown())
+              .optional()
+              .describe('Per-turn properties (page url, referrer, etc.) for the conversation'),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Streaming chat completion response in Server-Sent Events format',
+      headers: z.object({
+        'Content-Type': z.string().default('text/event-stream'),
+        'Cache-Control': z.string().default('no-cache'),
+        Connection: z.string().default('keep-alive'),
+      }),
+      content: {
+        'text/event-stream': {
+          schema: z.string().describe('Server-Sent Events stream with chat completion chunks'),
+        },
+      },
+    },
+    400: {
+      description: 'Invalid request context or parameters',
+      content: {
+        'application/json': {
+          schema: z.object({
+            error: z.string(),
+            details: z
+              .array(
+                z.object({
+                  field: z.string(),
+                  message: z.string(),
+                  value: z.unknown().optional(),
+                })
+              )
+              .optional(),
+          }),
+        },
+      },
+    },
+    404: {
+      description: 'Agent or agent not found',
+      content: {
+        'application/json': {
+          schema: z.object({
+            error: z.string(),
+          }),
+        },
+      },
+    },
+    409: errorSchemaFactory('conflict', 'Message with the supplied id already exists'),
+    500: {
+      description: 'Internal server error',
+      content: {
+        'application/json': {
+          schema: z.object({
+            error: z.string(),
+            message: z.string(),
+          }),
+        },
+      },
+    },
+  },
+});
+
+app.use('/completions', contextValidationMiddleware);
+
+app.openapi(chatCompletionsRoute, async (c) => {
+  // TTFT clock start: monotonic timestamp + the interaction (HTTP server) span,
+  // both captured at true handler entry. Capturing the span here (rather than inside
+  // the streaming callback) guarantees we record onto the request-wrapping span even
+  // if the async streaming context does not propagate the active span.
+  const ttftT0 = performance.now();
+  const ttftSpan = trace.getActiveSpan();
+
+  getLogger('chat').info(
+    {
+      path: c.req.path,
+      method: c.req.method,
+      params: c.req.param(),
+    },
+    'Chat route accessed'
+  );
+
+  const otelHeaders = {
+    traceparent: c.req.header('traceparent'),
+    tracestate: c.req.header('tracestate'),
+    baggage: c.req.header('baggage'),
+  };
+
+  logger.info(
+    {
+      otelHeaders,
+      path: c.req.path,
+      method: c.req.method,
+    },
+    'OpenTelemetry headers: chat'
+  );
+  try {
+    const executionContext = c.get('executionContext');
+    const { tenantId, projectId, agentId } = executionContext;
+
+    getLogger('chat').debug('Extracted chat parameters from API key context');
+
+    const body = c.get('requestBody') || {};
+    const conversationId = body.conversationId || getConversationId();
+
+    // Extract target context headers (for copilot/chat-to-edit scenarios)
+    const targetTenantId = c.req.header('x-target-tenant-id');
+    const targetProjectId = c.req.header('x-target-project-id');
+    const targetAgentId = c.req.header('x-target-agent-id');
+
+    const activeSpan = trace.getActiveSpan();
+    if (activeSpan) {
+      activeSpan.setAttributes({
+        'conversation.id': conversationId,
+        'tenant.id': tenantId,
+        'agent.id': agentId,
+        'project.id': projectId,
+        ...(targetTenantId && { 'target.tenant.id': targetTenantId }),
+        ...(targetProjectId && { 'target.project.id': targetProjectId }),
+        ...(targetAgentId && { 'target.agent.id': targetAgentId }),
+      });
+    }
+
+    let currentBag = propagation.getBaggage(otelContext.active());
+    if (!currentBag) {
+      currentBag = propagation.createBaggage();
+    }
+    currentBag = currentBag.setEntry('conversation.id', { value: conversationId });
+    const ctxWithBaggage = propagation.setBaggage(otelContext.active(), currentBag);
+    return await otelContext.with(ctxWithBaggage, async () => {
+      const fullAgent = executionContext.project.agents[agentId];
+      if (!fullAgent) {
+        throw createApiError({
+          code: 'not_found',
+          message: 'Agent not found',
+        });
+      }
+
+      const agent = fullAgent;
+      let defaultSubAgentId: string;
+
+      const agentKeys = Object.keys((fullAgent.subAgents as Record<string, any>) || {});
+      const firstAgentId = agentKeys.length > 0 ? agentKeys[0] : '';
+      defaultSubAgentId = (fullAgent.defaultSubAgentId as string) || firstAgentId; // Use first agent if no defaultSubAgentId
+
+      if (!defaultSubAgentId) {
+        throw createApiError({
+          code: 'not_found',
+          message: 'No default agent found in agent',
+        });
+      }
+
+      const existingActiveAgent = await getActiveAgentForConversation(runDbClient)({
+        scopes: { tenantId, projectId },
+        conversationId,
+      });
+      const isNewConversation = !existingActiveAgent;
+
+      const conversationMeta = buildConversationMetadata(executionContext);
+      const resolvedUserPropertiesRaw =
+        body.userProperties ??
+        parseAgentFabricJsonHeader(c.req.header('x-agent-fabric-user-properties'), {
+          headerName: 'x-agent-fabric-user-properties',
+          logger,
+        });
+      const resolvedUserProperties = isAutoMintIdentity(resolvedUserPropertiesRaw)
+        ? undefined
+        : stripIdentificationType(resolvedUserPropertiesRaw);
+      const resolvedProperties =
+        body.properties ??
+        parseAgentFabricJsonHeader(c.req.header('x-agent-fabric-properties'), {
+          headerName: 'x-agent-fabric-properties',
+          logger,
+        });
+      await createOrGetConversation(runDbClient)({
+        tenantId,
+        projectId,
+        id: conversationId,
+        agentId: agentId,
+        activeSubAgentId: existingActiveAgent?.activeSubAgentId ?? defaultSubAgentId,
+        ref: executionContext.resolvedRef,
+        userId: executionContext.metadata?.endUserId,
+        ...(conversationMeta ? { metadata: conversationMeta } : {}),
+        ...(resolvedUserProperties !== undefined ? { userProperties: resolvedUserProperties } : {}),
+        ...(resolvedProperties !== undefined ? { properties: resolvedProperties } : {}),
+      });
+
+      const activeAgent = existingActiveAgent;
+      if (!activeAgent) {
+        await setActiveAgentForConversation(runDbClient)({
+          scopes: { tenantId, projectId },
+          conversationId,
+          agentId: agentId,
+          subAgentId: defaultSubAgentId,
+          ref: executionContext.resolvedRef,
+        });
+      }
+      const subAgentId = activeAgent?.activeSubAgentId || defaultSubAgentId;
+
+      const agentInfo = executionContext.project.agents[agentId]?.subAgents[subAgentId];
+
+      if (!agentInfo) {
+        throw createApiError({
+          code: 'not_found',
+          message: 'Agent not found',
+        });
+      }
+
+      const validatedContext = (c as any).get('validatedContext') || body.headers || {};
+
+      const credentialStores = c.get('credentialStores');
+
+      const prefetchedDestinations = executionContext.resolvedRef
+        ? await prefetchWebhookDestinations({
+            tenantId,
+            projectId,
+            agentId,
+            resolvedRef: executionContext.resolvedRef,
+          })
+        : undefined;
+
+      await handleContextResolution({
+        executionContext,
+        conversationId,
+        headers: validatedContext,
+        credentialStores,
+        prefetchedDestinations,
+        conversationUserProperties: resolvedUserProperties ?? null,
+        conversationProperties: resolvedProperties ?? null,
+      });
+
+      logger.info(
+        {
+          tenantId,
+          projectId,
+          agentId,
+          conversationId,
+          defaultSubAgentId,
+          activeSubAgentId: activeAgent?.activeSubAgentId || 'none',
+          hasContextConfig: !!agent.contextConfigId,
+          hasHeaders: !!body.headers,
+          hasValidatedContext: !!validatedContext,
+          validatedContextKeys: Object.keys(validatedContext),
+        },
+        'parameters'
+      );
+
+      const requestId = `chatcmpl-${Date.now()}`;
+      const timestamp = Math.floor(Date.now() / 1000);
+
+      const lastUserMessage = body.messages
+        .filter((msg: Message) => msg.role === 'user')
+        .slice(-1)[0];
+
+      // Build Part[] for execution (text + image parts), validated against core PartSchema
+      const parsedMessageParts = z
+        .array(PartSchema)
+        .parse(lastUserMessage ? getMessagePartsFromOpenAIContent(lastUserMessage.content) : []);
+      const messageParts = await inlineExternalPdfUrlParts(parsedMessageParts);
+
+      // Extract text content from parts
+      const userMessage = extractTextFromParts(messageParts);
+
+      const agentName = agent.name;
+      const messageSpan = trace.getActiveSpan();
+      if (messageSpan) {
+        messageSpan.setAttributes({
+          'message.content': userMessage,
+          'message.timestamp': new Date().toISOString(),
+          'agent.name': agentName,
+        });
+        const invocationType = c.req.header('x-agent-fabric-invocation-type');
+        if (invocationType) {
+          messageSpan.setAttribute('invocation.type', invocationType);
+        }
+        const invocationEntryPoint = c.req.header('x-agent-fabric-invocation-entry-point');
+        if (invocationEntryPoint) {
+          messageSpan.setAttribute('invocation.entryPoint', invocationEntryPoint);
+        }
+        // Add user information from execution context metadata if available
+        if (executionContext.metadata?.initiatedBy) {
+          messageSpan.setAttribute('user.type', executionContext.metadata.initiatedBy.type);
+          messageSpan.setAttribute('user.id', executionContext.metadata.initiatedBy.id);
+        }
+      }
+      // Honor a client-supplied user-message id so events fired client-side
+      // (before this row lands) join back to messages.id. OpenAI-compatible
+      // messages don't carry per-message ids, so callers use the top-level
+      // body.messageId field. Validate manually here because this handler
+      // reads from the raw `requestBody` context value rather than from
+      // c.req.valid('json'), so the schema's regex/length constraints
+      // aren't auto-enforced.
+      if (body.messageId !== undefined && !MessageIdSchema.safeParse(body.messageId).success) {
+        throw createApiError({
+          code: 'bad_request',
+          message: 'messageId must match /^[A-Za-z0-9_-]{1,64}$/',
+        });
+      }
+      const userMessageId = body.messageId ?? generateId();
+      const hasAttachedFiles = messageParts.some((part) => part.kind === 'file');
+      const attachmentTaskId = hasAttachedFiles ? `message_${userMessageId}` : undefined;
+
+      if (messageSpan) {
+        messageSpan.setAttribute('message.id', userMessageId);
+      }
+
+      const messageContent = await buildPersistedMessageContent(userMessage, messageParts, {
+        tenantId,
+        projectId,
+        conversationId,
+        messageId: userMessageId,
+        taskId: `message_${userMessageId}`,
+        toolCallId: buildMessageAttachmentToolCallId(userMessageId),
+        source: 'user-message',
+      });
+
+      try {
+        await createMessage(runDbClient)({
+          scopes: { tenantId, projectId },
+          data: {
+            id: userMessageId,
+            conversationId,
+            role: 'user',
+            content: messageContent,
+            visibility: 'user-facing',
+            messageType: 'chat',
+            ...(attachmentTaskId ? { taskId: attachmentTaskId } : {}),
+            ...(resolvedUserProperties !== undefined
+              ? { userProperties: resolvedUserProperties }
+              : {}),
+          },
+        });
+      } catch (err) {
+        // unique_violation on (tenantId, projectId, id) — a client retried or
+        // replayed a request with an id that's already persisted in this
+        // (tenant, project). Surface a 409 instead of an unhandled 500 so
+        // callers can recover. Drizzle wraps the underlying pg/Doltgres error;
+        // isUniqueConstraintError() handles both shapes via err.cause.
+        if (isUniqueConstraintError(err)) {
+          getLogger('chat').info(
+            { userMessageId, tenantId, projectId, conversationId },
+            'createMessage conflict — returning 409'
+          );
+          throw createApiError({
+            code: 'conflict',
+            message: `Message with id '${userMessageId}' already exists in this project`,
+          });
+        }
+        throw err;
+      }
+
+      if (messageSpan) {
+        messageSpan.addEvent('user.message.stored', {
+          'message.id': userMessageId,
+          'database.operation': 'insert',
+        });
+      }
+
+      if (executionContext.resolvedRef) {
+        emitConversationWebhook({
+          runDbClient,
+          tenantId,
+          projectId,
+          agentId,
+          agentName,
+          conversationId,
+          resolvedRef: executionContext.resolvedRef,
+          eventType: isNewConversation ? 'conversation.created' : 'conversation.updated',
+          prefetchedDestinations,
+        });
+      }
+
+      const forwardedHeaders: Record<string, string> = {};
+      const xForwardedCookie = c.req.header('x-forwarded-cookie');
+      const cookie = c.req.header('cookie');
+      const clientTimezone = c.req.header('x-agent-fabric-client-timezone');
+      const clientTimestamp = c.req.header('x-agent-fabric-client-timestamp');
+
+      if (xForwardedCookie) {
+        forwardedHeaders['x-forwarded-cookie'] = xForwardedCookie;
+      } else if (cookie) {
+        forwardedHeaders['x-forwarded-cookie'] = cookie;
+      }
+
+      if (clientTimezone && clientTimestamp) {
+        const isValidTimezone =
+          clientTimezone.length < 100 && /^[A-Za-z0-9_/\-+]+$/.test(clientTimezone);
+        const isValidTimestamp =
+          clientTimestamp.length < 50 &&
+          /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/.test(clientTimestamp);
+
+        if (isValidTimezone && isValidTimestamp) {
+          forwardedHeaders['x-agent-fabric-client-timezone'] = clientTimezone;
+          forwardedHeaders['x-agent-fabric-client-timestamp'] = clientTimestamp;
+        } else {
+          logger.warn(
+            {
+              clientTimezone: isValidTimezone ? clientTimezone : clientTimezone.substring(0, 100),
+              clientTimestamp: isValidTimestamp
+                ? clientTimestamp
+                : clientTimestamp.substring(0, 50),
+              isValidTimezone,
+              isValidTimestamp,
+            },
+            'Invalid client timezone or timestamp format, ignoring both'
+          );
+        }
+      } else if (clientTimezone || clientTimestamp) {
+        logger.warn(
+          { hasTimezone: !!clientTimezone, hasTimestamp: !!clientTimestamp },
+          'Client timezone and timestamp must both be present, ignoring'
+        );
+      }
+
+      const effectiveExecutionMode = body.executionMode ?? agent.executionMode ?? 'classic';
+
+      if (effectiveExecutionMode === 'durable') {
+        const emitOperationsHeader = c.req.header('x-emit-operations');
+        const emitOperations = emitOperationsHeader === 'true';
+
+        const userId = getUserIdFromContext(executionContext);
+        const run = await start(agentExecutionWorkflow, [
+          {
+            tenantId,
+            projectId,
+            agentId,
+            conversationId,
+            userMessage,
+            messageParts: messageParts.length > 0 ? messageParts : undefined,
+            requestId,
+            resolvedRef: executionContext.resolvedRef,
+            forwardedHeaders:
+              Object.keys(forwardedHeaders).length > 0 ? forwardedHeaders : undefined,
+            emitOperations: emitOperations || undefined,
+            userId,
+          },
+        ]);
+
+        logger.info({ runId: run.runId, conversationId }, 'Durable execution started');
+
+        c.header('Content-Type', 'text/event-stream');
+        c.header('Cache-Control', 'no-cache');
+        c.header('Connection', 'keep-alive');
+        c.header('x-workflow-run-id', run.runId);
+
+        return stream(c, async (s) => {
+          try {
+            const reader = run.readable.getReader();
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              await s.write(value);
+            }
+          } catch (error) {
+            logger.error({ error, runId: run.runId }, 'Error streaming durable execution');
+            await s.write(`event: error\ndata: ${JSON.stringify({ error: 'Stream error' })}\n\n`);
+          }
+        });
+      }
+
+      return streamSSE(c, async (stream) => {
+        const chunkString = (s: string, size = 16) => {
+          const out: string[] = [];
+          for (let i = 0; i < s.length; i += size) out.push(s.slice(i, i + size));
+          return out;
+        };
+
+        let unsubscribe: (() => void) | undefined;
+        try {
+          // Request-scoped TTFT recorder writes to the interaction (HTTP server) span,
+          // which is the active span at handler entry and wraps all transfer iterations.
+          const ttftRecorder = new TtftRecorder(ttftT0, ttftSpan);
+          registerTtftRecorder(requestId, ttftRecorder);
+
+          const sseHelper = createSSEStreamHelper(stream, requestId, timestamp, ttftRecorder);
+
+          await sseHelper.writeRole();
+
+          const seenToolCalls = new Set<string>();
+          const seenOutputs = new Set<string>();
+
+          unsubscribe = toolApprovalUiBus.subscribe(requestId, async (event) => {
+            if (event.type === APPROVAL_NEEDED_EVENT) {
+              if (seenToolCalls.has(event.toolCallId)) return;
+              seenToolCalls.add(event.toolCallId);
+
+              await sseHelper.writeToolInputStart({
+                toolCallId: event.toolCallId,
+                toolName: event.toolName,
+              });
+
+              const inputText = JSON.stringify(event.input ?? {});
+              for (const part of chunkString(inputText, 16)) {
+                await sseHelper.writeToolInputDelta({
+                  toolCallId: event.toolCallId,
+                  inputTextDelta: part,
+                });
+              }
+
+              await sseHelper.writeToolInputAvailable({
+                toolCallId: event.toolCallId,
+                toolName: event.toolName,
+                input: event.input ?? {},
+                providerMetadata: event.providerMetadata,
+              });
+
+              await sseHelper.writeToolApprovalRequest({
+                approvalId: event.approvalId,
+                toolCallId: event.toolCallId,
+              });
+            } else if (event.type === APPROVAL_RESOLVED_EVENT) {
+              if (seenOutputs.has(event.toolCallId)) return;
+              seenOutputs.add(event.toolCallId);
+
+              if (event.approved) {
+                await sseHelper.writeToolOutputAvailable({
+                  toolCallId: event.toolCallId,
+                  output: { status: 'approved' },
+                });
+              } else {
+                await sseHelper.writeToolOutputDenied({ toolCallId: event.toolCallId });
+              }
+            }
+          });
+
+          logger.info({ subAgentId }, 'Starting execution');
+
+          const emitOperationsHeader = c.req.header('x-emit-operations');
+          const emitOperations = emitOperationsHeader === 'true';
+
+          const executionHandler = new ExecutionHandler();
+          const result = await executionHandler.execute({
+            executionContext,
+            conversationId,
+            userMessage,
+            messageParts: messageParts.length > 0 ? messageParts : undefined,
+            initialAgentId: subAgentId,
+            requestId,
+            sseHelper,
+            emitOperations,
+            forwardedHeaders,
+            prefetchedDestinations,
+            conversationUserProperties: resolvedUserProperties ?? null,
+            conversationProperties: resolvedProperties ?? null,
+          });
+
+          logger.info(
+            { result },
+            `Execution completed: ${result.success ? 'success' : 'failed'} after ${result.iterations} iterations`
+          );
+
+          if (!result.success) {
+            await sseHelper.writeOperation(
+              errorOp(
+                'Sorry, I was unable to process your request at this time. Please try again.',
+                'system'
+              )
+            );
+          }
+
+          await sseHelper.complete();
+        } catch (error) {
+          logger.error(
+            {
+              error: error instanceof Error ? error.message : error,
+              stack: error instanceof Error ? error.stack : undefined,
+            },
+            'Error during streaming execution'
+          );
+
+          try {
+            const sseHelper = createSSEStreamHelper(stream, requestId, timestamp);
+            await sseHelper.writeOperation(
+              errorOp(
+                'Sorry, I was unable to process your request at this time. Please try again.',
+                'system'
+              )
+            );
+            await sseHelper.complete();
+          } catch (streamError) {
+            logger.error({ streamError }, 'Failed to write error to stream');
+          }
+        } finally {
+          try {
+            unsubscribe?.();
+          } catch (_e) {}
+          unregisterTtftRecorder(requestId);
+          await flushBatchProcessor();
+        }
+      });
+    });
+  } catch (error) {
+    if (error instanceof FileSecurityError) {
+      throw createApiError({
+        code: 'bad_request',
+        message: error.message,
+      });
+    }
+    if (error instanceof PdfUrlIngestionError) {
+      throw createApiError({
+        code: 'bad_request',
+        message: error.message,
+      });
+    }
+    if (error instanceof HTTPException) {
+      throw error;
+    }
+    logger.error(
+      {
+        error: error instanceof Error ? error.message : error,
+        stack: error instanceof Error ? error.stack : undefined,
+      },
+      'Error in chat completions endpoint before streaming'
+    );
+
+    throw createApiError({
+      code: 'internal_server_error',
+      message: 'Failed to process chat completion',
+    });
+  }
+});
+
+export default app;

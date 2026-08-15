@@ -1,0 +1,1660 @@
+import {
+  CONTEXT_BREAKDOWN_TOTAL_SPAN_ATTRIBUTE,
+  parseContextBreakdownFromSpan,
+  V1_BREAKDOWN_SCHEMA,
+} from '@agent-fabric/agents-core/client-exports';
+import { type NextRequest, NextResponse } from 'next/server';
+import {
+  ACTIVITY_NAMES,
+  ACTIVITY_STATUS,
+  ACTIVITY_TYPES,
+  AGENT_IDS,
+  AI_OPERATIONS,
+  buildFilterExpression,
+  type CacheState,
+  deriveCacheState,
+  FIELD_CONTEXTS,
+  FIELD_DATA_TYPES,
+  isProviderSupportedForCaching,
+  NON_EVAL_USAGE_GENERATION_TYPES,
+  OPERATORS,
+  ORDER_DIRECTIONS,
+  QUERY_DEFAULTS,
+  QUERY_TYPES,
+  REQUEST_TYPES,
+  resolveCachingProvider,
+  SIGNALS,
+  SPAN_KEYS,
+  SPAN_NAMES,
+  UNKNOWN_VALUE,
+} from '@/constants/signoz';
+import { getAgentsApiUrl } from '@/lib/api/api-config';
+import { fetchWithRetry } from '@/lib/api/fetch-with-retry';
+import {
+  DEFAULT_LOOKBACK_MS,
+  getConversationTimeRange,
+} from '@/lib/api/signoz-conversation-time-range';
+import { requireApiRouteSessionOrBearer } from '@/lib/auth/api-route-auth';
+import { getLogger } from '@/lib/logger';
+import { parseTtftSeconds } from '@/lib/utils/ttft';
+
+export const dynamic = 'force-dynamic';
+
+// ---------- Types
+
+type SigNozListItem = { data?: Record<string, any>; [k: string]: any };
+type SigNozResult = { queryName?: string; rows?: SigNozListItem[] };
+type SigNozResp = { results: SigNozResult[] };
+
+function getField(span: SigNozListItem, key: string) {
+  const d = span?.data ?? span;
+  return d?.[key] ?? span?.[key];
+}
+
+function getString(span: SigNozListItem, key: string, fallback = ''): string {
+  const v = getField(span, key);
+  return typeof v === 'string' ? v : v == null ? fallback : String(v);
+}
+
+function getNumber(span: SigNozListItem, key: string, fallback = 0): number {
+  const v = getField(span, key);
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+const AI_RESPONSE_TEXT_TRUNCATE_CHARS = 500;
+
+function truncateText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}…`;
+}
+
+const GENERATION_TYPE_LABELS: Record<string, string> = {
+  sub_agent_generation: 'Agent Generation',
+  status_update: 'Status Update',
+  artifact_metadata: 'Artifact Metadata',
+  mid_generation_compression: 'Mid-Generation Compression',
+  conversation_compression: 'Conversation Compression',
+};
+
+function formatGenerationType(
+  genType: string,
+  responseText?: string
+): { description: string; result?: string } {
+  const label = GENERATION_TYPE_LABELS[genType] ?? genType.replace(/_/g, ' ');
+
+  if (!responseText) return { description: label };
+
+  try {
+    const parsed = JSON.parse(responseText);
+
+    if (genType === 'artifact_metadata' && parsed.name) {
+      return { description: 'Artifact Metadata', result: parsed.name };
+    }
+
+    if (genType === 'status_update' && parsed.updates) {
+      const updates = parsed.updates as Array<{ type: string; data?: { label?: string } }>;
+      if (updates.length === 1 && updates[0].type === 'no_relevant_updates') {
+        return { description: 'Status Update', result: 'No updates' };
+      }
+      const items = updates.filter((u) => u.data?.label).map((u) => `[${u.type}] ${u.data?.label}`);
+      if (items.length > 0) {
+        return { description: 'Status Update', result: items.join(', ') };
+      }
+    }
+  } catch {
+    // not valid JSON, use label as-is
+  }
+
+  return { description: label };
+}
+
+async function signozQuery(
+  payload: any,
+  tenantId: string,
+  authHeaders: Record<string, string>
+): Promise<SigNozResp> {
+  const logger = getLogger('traces-query');
+
+  try {
+    const agentsApiUrl = getAgentsApiUrl();
+    const endpoint = `${agentsApiUrl}/manage/tenants/${tenantId}/signoz/query`;
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...authHeaders,
+    };
+
+    logger.debug({ endpoint }, 'Calling agents-api for conversation traces');
+
+    const response = await fetchWithRetry(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      credentials: 'include',
+      timeout: 30000,
+      maxAttempts: 3,
+      label: 'signoz-conversation-query',
+    });
+
+    if (!response.ok) {
+      const statusText = response.statusText;
+      if (response.status === 401 || response.status === 403) {
+        throw new Error(`SigNoz authentication failed: ${statusText}`);
+      }
+      if (response.status === 400) {
+        throw new Error(`Invalid SigNoz query: ${statusText}`);
+      }
+      if (response.status === 429) {
+        throw new Error(`SigNoz rate limit exceeded: ${statusText}`);
+      }
+      if (response.status >= 500) {
+        throw new Error(`SigNoz server error: ${statusText}`);
+      }
+      throw new Error(`SigNoz request failed: ${statusText}`);
+    }
+
+    const json = await response.json();
+    const results = json?.data?.data?.results ?? [];
+    logger.debug(
+      {
+        responseData: results.map((r: any) => ({ queryName: r.queryName, count: r.rows?.length })),
+      },
+      'SigNoz response (truncated)'
+    );
+    return { results };
+  } catch (e) {
+    const err = e as {
+      message?: string;
+      name?: string;
+      stack?: string;
+      code?: unknown;
+      cause?: { code?: string; message?: string };
+    };
+    logger.error(
+      {
+        error: e,
+        errorName: err?.name,
+        errorMessage: err?.message,
+        errorStack: err?.stack,
+        errorCode: err?.code,
+        causeCode: err?.cause?.code,
+        causeMessage: err?.cause?.message,
+      },
+      'SigNoz query error'
+    );
+
+    if (e instanceof TypeError) {
+      throw new Error(`SigNoz service unavailable: ${e.message}`);
+    }
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      throw new Error(`SigNoz service unavailable: request timed out`);
+    }
+    throw e instanceof Error ? e : new Error(`SigNoz query failed: ${String(e)}`);
+  }
+}
+
+// ---------- Payload builder (single combined "list" payload)
+
+type SelectField = { name: string; fieldDataType: string; fieldContext: string };
+
+function sf(name: string, fieldDataType: string, fieldContext: string): SelectField {
+  return { name, fieldDataType, fieldContext };
+}
+
+const span = FIELD_CONTEXTS.SPAN;
+const attr = FIELD_CONTEXTS.ATTRIBUTE;
+const str = FIELD_DATA_TYPES.STRING;
+const int64 = FIELD_DATA_TYPES.INT64;
+const float64 = FIELD_DATA_TYPES.FLOAT64;
+const bool = FIELD_DATA_TYPES.BOOL;
+
+function buildBaseExpression(conversationId: string, projectId?: string): string {
+  // Route through buildFilterExpression (which single-quote-escapes values) rather than
+  // raw-interpolating the ids into the filter string — keeps escaping consistent with the
+  // other queries in this file and closes a latent filter-injection vector.
+  return buildFilterExpression([
+    { key: SPAN_KEYS.CONVERSATION_ID, op: OPERATORS.EQUALS, value: conversationId },
+    ...(projectId ? [{ key: SPAN_KEYS.PROJECT_ID, op: OPERATORS.EQUALS, value: projectId }] : []),
+  ]);
+}
+
+const SPAN_QUERY_LIMIT = 10_000;
+
+function buildQueryEnvelope(
+  name: string,
+  filterExpression: string,
+  selectFields: SelectField[],
+  limit = SPAN_QUERY_LIMIT
+): any {
+  return {
+    type: QUERY_TYPES.BUILDER_QUERY,
+    spec: {
+      name,
+      signal: SIGNALS.TRACES,
+      filter: { expression: filterExpression },
+      selectFields,
+      order: [{ key: { name: SPAN_KEYS.TIMESTAMP }, direction: ORDER_DIRECTIONS.DESC }],
+      limit,
+      stepInterval: QUERY_DEFAULTS.STEP_INTERVAL,
+      disabled: QUERY_DEFAULTS.DISABLED,
+    },
+  };
+}
+
+function wrapQueries(queries: any[], start: number, end: number, projectId?: string) {
+  return {
+    start,
+    end,
+    requestType: REQUEST_TYPES.RAW,
+    ...(projectId && { projectId }),
+    compositeQuery: { queries },
+  };
+}
+
+function buildAllSpansPayload(
+  conversationId: string,
+  start = Date.now() - DEFAULT_LOOKBACK_MS,
+  end = Date.now(),
+  projectId?: string
+) {
+  const base = buildBaseExpression(conversationId, projectId);
+
+  const allFields: SelectField[] = [
+    sf(SPAN_KEYS.SPAN_ID, str, span),
+    sf(SPAN_KEYS.TRACE_ID, str, span),
+    sf(SPAN_KEYS.NAME, str, span),
+    sf(SPAN_KEYS.PARENT_SPAN_ID, str, span),
+    sf(SPAN_KEYS.TIMESTAMP, int64, span),
+    sf(SPAN_KEYS.HAS_ERROR, bool, span),
+    sf(SPAN_KEYS.DURATION_NANO, float64, span),
+    sf(SPAN_KEYS.STATUS_MESSAGE, str, attr),
+    sf(SPAN_KEYS.SUB_AGENT_ID, str, attr),
+    sf(SPAN_KEYS.SUB_AGENT_NAME, str, attr),
+    sf(SPAN_KEYS.AGENT_ID, str, attr),
+    sf(SPAN_KEYS.AGENT_NAME, str, attr),
+    sf(SPAN_KEYS.MESSAGE_ID, str, attr),
+    sf(SPAN_KEYS.AI_TOOL_CALL_NAME, str, attr),
+    sf(SPAN_KEYS.AI_TOOL_CALL_ARGS, str, attr),
+    sf(SPAN_KEYS.AI_TOOL_CALL_RESULT, str, attr),
+    sf(SPAN_KEYS.AI_TOOL_TYPE, str, attr),
+    sf(SPAN_KEYS.AI_TOOL_CALL_MCP_SERVER_ID, str, attr),
+    sf(SPAN_KEYS.AI_TOOL_CALL_MCP_SERVER_NAME, str, attr),
+    sf(SPAN_KEYS.AI_TELEMETRY_FUNCTION_ID, str, attr),
+    sf(SPAN_KEYS.DELEGATION_FROM_SUB_AGENT_ID, str, attr),
+    sf(SPAN_KEYS.DELEGATION_TO_SUB_AGENT_ID, str, attr),
+    sf(SPAN_KEYS.DELEGATION_TYPE, str, attr),
+    sf(SPAN_KEYS.TRANSFER_FROM_SUB_AGENT_ID, str, attr),
+    sf(SPAN_KEYS.TRANSFER_TO_SUB_AGENT_ID, str, attr),
+    sf(SPAN_KEYS.TOOL_PURPOSE, str, attr),
+    sf(SPAN_KEYS.MESSAGE_CONTENT, str, attr),
+    sf(SPAN_KEYS.MESSAGE_PARTS, str, attr),
+    sf(SPAN_KEYS.MESSAGE_TIMESTAMP, str, attr),
+    sf(SPAN_KEYS.INVOCATION_TYPE, str, attr),
+    sf(SPAN_KEYS.INVOCATION_ENTRY_POINT, str, attr),
+    sf(SPAN_KEYS.TRIGGER_ID, str, attr),
+    sf(SPAN_KEYS.TRIGGER_INVOCATION_ID, str, attr),
+    sf(SPAN_KEYS.TRIGGER_RUN_AS_USER_ID, str, attr),
+    sf(SPAN_KEYS.AI_RESPONSE_CONTENT, str, attr),
+    sf(SPAN_KEYS.AI_RESPONSE_TIMESTAMP, str, attr),
+    sf(SPAN_KEYS.AI_OPERATION_ID, str, attr),
+    sf(SPAN_KEYS.AI_TELEMETRY_SUB_AGENT_ID, str, attr),
+    sf(SPAN_KEYS.AI_TELEMETRY_SUB_AGENT_NAME, str, attr),
+    sf(SPAN_KEYS.AI_MODEL_ID, str, attr),
+    sf(SPAN_KEYS.AI_MODEL_PROVIDER, str, attr),
+    sf(SPAN_KEYS.GEN_AI_RESPONSE_PROVIDER, str, attr),
+    sf(SPAN_KEYS.GEN_AI_USAGE_INPUT_TOKENS, float64, attr),
+    sf(SPAN_KEYS.GEN_AI_USAGE_OUTPUT_TOKENS, float64, attr),
+    sf(SPAN_KEYS.GEN_AI_COST_ESTIMATED_USD, float64, attr),
+    sf(SPAN_KEYS.GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS, float64, attr),
+    sf(SPAN_KEYS.GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS, float64, attr),
+    sf(SPAN_KEYS.CACHE_INTENT_MARKER_COUNT, float64, attr),
+    sf(SPAN_KEYS.CACHE_INTENT_PREFIX_SIGNATURE, str, attr),
+    sf(SPAN_KEYS.AI_RESPONSE_TEXT, str, attr),
+    sf(SPAN_KEYS.AI_TELEMETRY_METADATA_PHASE, str, attr),
+    sf(SPAN_KEYS.AI_TELEMETRY_GENERATION_TYPE, str, attr),
+    sf(CONTEXT_BREAKDOWN_TOTAL_SPAN_ATTRIBUTE, int64, attr),
+    ...V1_BREAKDOWN_SCHEMA.map((def) => sf(def.spanAttribute, int64, attr)),
+    sf(SPAN_KEYS.CONTEXT_URL, str, attr),
+    sf(SPAN_KEYS.CONTEXT_CONFIG_ID, str, attr),
+    sf(SPAN_KEYS.CONTEXT_AGENT_ID, str, attr),
+    sf(SPAN_KEYS.CONTEXT_HEADERS_KEYS, str, attr),
+    sf(SPAN_KEYS.HTTP_URL, str, attr),
+    sf(SPAN_KEYS.HTTP_STATUS_CODE, str, attr),
+    sf(SPAN_KEYS.HTTP_RESPONSE_BODY_SIZE, str, attr),
+    sf(SPAN_KEYS.ARTIFACT_ID, str, attr),
+    sf(SPAN_KEYS.ARTIFACT_TYPE, str, attr),
+    sf(SPAN_KEYS.ARTIFACT_TOOL_CALL_ID, str, attr),
+    sf(SPAN_KEYS.ARTIFACT_NAME, str, attr),
+    sf(SPAN_KEYS.ARTIFACT_DESCRIPTION, str, attr),
+    sf(SPAN_KEYS.ARTIFACT_IS_OVERSIZED, bool, attr),
+    sf(SPAN_KEYS.ARTIFACT_RETRIEVAL_BLOCKED, bool, attr),
+    sf(SPAN_KEYS.ARTIFACT_ORIGINAL_TOKEN_SIZE, int64, attr),
+    sf(SPAN_KEYS.ARTIFACT_CONTEXT_WINDOW_SIZE, int64, attr),
+    sf(SPAN_KEYS.TOOL_NAME, str, attr),
+    sf(SPAN_KEYS.TOOL_CALL_ID, str, attr),
+    sf(SPAN_KEYS.COMPRESSION_TYPE, str, attr),
+    sf(SPAN_KEYS.COMPRESSION_SESSION_ID, str, attr),
+    sf(SPAN_KEYS.COMPRESSION_GENERATED_TOKENS, int64, attr),
+    sf(SPAN_KEYS.COMPRESSION_TOTAL_CONTEXT_TOKENS, int64, attr),
+    sf(SPAN_KEYS.COMPRESSION_TRIGGER_AT, int64, attr),
+    sf(SPAN_KEYS.COMPRESSION_RESULT_OUTPUT_TOKENS, int64, attr),
+    sf(SPAN_KEYS.COMPRESSION_RESULT_COMPRESSION_RATIO, float64, attr),
+    sf(SPAN_KEYS.COMPRESSION_RESULT_HIGH_LEVEL, str, attr),
+    sf(SPAN_KEYS.COMPRESSION_SUCCESS, bool, attr),
+    sf(SPAN_KEYS.COMPRESSION_ERROR, str, attr),
+    sf(SPAN_KEYS.AGENT_MAX_STEPS_REACHED, bool, attr),
+    sf(SPAN_KEYS.AGENT_STEPS_COMPLETED, int64, attr),
+    sf(SPAN_KEYS.AGENT_MAX_STEPS, int64, attr),
+    sf(SPAN_KEYS.STREAM_CLEANUP_REASON, str, attr),
+    sf(SPAN_KEYS.STREAM_MAX_LIFETIME_MS, int64, attr),
+    sf(SPAN_KEYS.STREAM_BUFFER_SIZE_BYTES, int64, attr),
+    sf(SPAN_KEYS.TOOL_RESPONSE_CONTENT, str, attr),
+    sf(SPAN_KEYS.TOOL_RESPONSE_TIMESTAMP, str, attr),
+    sf(SPAN_KEYS.AI_RESPONSE_FINISH_REASON, str, attr),
+    // TTFT attributes (seconds) live on the interaction HTTP server span.
+    sf(SPAN_KEYS.TTFT_MODEL_TOKEN, float64, attr),
+    sf(SPAN_KEYS.TTFT_VISIBLE_TOKEN, float64, attr),
+    sf(SPAN_KEYS.TTFT_VISIBLE_PART, float64, attr),
+  ];
+
+  return wrapQueries([buildQueryEnvelope('allSpans', base, allFields)], start, end, projectId);
+}
+
+const NON_EVAL_USAGE_SET: Set<string> = new Set(NON_EVAL_USAGE_GENERATION_TYPES);
+
+function classifySpans(allRows: SigNozListItem[]) {
+  const toolCallSpans: SigNozListItem[] = [];
+  const userMessageSpans: SigNozListItem[] = [];
+  const aiAssistantSpans: SigNozListItem[] = [];
+  const aiGenerationSpans: SigNozListItem[] = [];
+  const aiStreamingSpans: SigNozListItem[] = [];
+  const agentGenerationSpans: SigNozListItem[] = [];
+  const contextResolutionSpans: SigNozListItem[] = [];
+  const contextHandleSpans: SigNozListItem[] = [];
+  const contextFetcherSpans: SigNozListItem[] = [];
+  const artifactProcessingSpans: SigNozListItem[] = [];
+  const toolApprovalRequestedSpans: SigNozListItem[] = [];
+  const toolApprovalApprovedSpans: SigNozListItem[] = [];
+  const toolApprovalDeniedSpans: SigNozListItem[] = [];
+  const compressionSpans: SigNozListItem[] = [];
+  const maxStepsReachedSpans: SigNozListItem[] = [];
+  const streamLifetimeExceededSpans: SigNozListItem[] = [];
+  const durableToolExecutionSpans: SigNozListItem[] = [];
+  const spansWithErrorsList: SigNozListItem[] = [];
+
+  for (const row of allRows) {
+    const name = getString(row, SPAN_KEYS.NAME);
+    const hasError = getField(row, SPAN_KEYS.HAS_ERROR) === true;
+
+    if (hasError) spansWithErrorsList.push(row);
+
+    switch (name) {
+      case SPAN_NAMES.AI_TOOL_CALL:
+        toolCallSpans.push(row);
+        break;
+      case SPAN_NAMES.AGENT_GENERATION:
+        agentGenerationSpans.push(row);
+        break;
+      case SPAN_NAMES.CONTEXT_RESOLUTION:
+        contextResolutionSpans.push(row);
+        break;
+      case SPAN_NAMES.CONTEXT_HANDLE:
+        contextHandleSpans.push(row);
+        break;
+      case SPAN_NAMES.CONTEXT_FETCHER:
+        contextFetcherSpans.push(row);
+        break;
+      case SPAN_NAMES.ARTIFACT_PROCESSING:
+        artifactProcessingSpans.push(row);
+        break;
+      case SPAN_NAMES.TOOL_APPROVAL_REQUESTED:
+        toolApprovalRequestedSpans.push(row);
+        break;
+      case SPAN_NAMES.TOOL_APPROVAL_APPROVED:
+        toolApprovalApprovedSpans.push(row);
+        break;
+      case SPAN_NAMES.TOOL_APPROVAL_DENIED:
+        toolApprovalDeniedSpans.push(row);
+        break;
+      case SPAN_NAMES.COMPRESSOR_SAFE_COMPRESS:
+        compressionSpans.push(row);
+        break;
+      case SPAN_NAMES.AGENT_MAX_STEPS_REACHED:
+        maxStepsReachedSpans.push(row);
+        break;
+      case SPAN_NAMES.STREAM_FORCE_CLEANUP:
+        streamLifetimeExceededSpans.push(row);
+        break;
+      case SPAN_NAMES.DURABLE_TOOL_EXECUTION:
+        durableToolExecutionSpans.push(row);
+        break;
+      default: {
+        const msgContent = getString(row, SPAN_KEYS.MESSAGE_CONTENT);
+        if (msgContent) {
+          userMessageSpans.push(row);
+          break;
+        }
+        const aiContent = getString(row, SPAN_KEYS.AI_RESPONSE_CONTENT);
+        if (aiContent) {
+          aiAssistantSpans.push(row);
+          break;
+        }
+        const opId = getString(row, SPAN_KEYS.AI_OPERATION_ID);
+        if (opId === AI_OPERATIONS.GENERATE_TEXT || opId === AI_OPERATIONS.STREAM_TEXT) {
+          const genType = getString(row, SPAN_KEYS.AI_TELEMETRY_GENERATION_TYPE);
+          if (genType && NON_EVAL_USAGE_SET.has(genType)) {
+            if (opId === AI_OPERATIONS.GENERATE_TEXT) aiGenerationSpans.push(row);
+            else aiStreamingSpans.push(row);
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  return {
+    toolCallSpans,
+    userMessageSpans,
+    aiAssistantSpans,
+    aiGenerationSpans,
+    aiStreamingSpans,
+    agentGenerationSpans,
+    contextResolutionSpans,
+    contextHandleSpans,
+    contextFetcherSpans,
+    artifactProcessingSpans,
+    toolApprovalRequestedSpans,
+    toolApprovalApprovedSpans,
+    toolApprovalDeniedSpans,
+    compressionSpans,
+    maxStepsReachedSpans,
+    streamLifetimeExceededSpans,
+    durableToolExecutionSpans,
+    spansWithErrorsList,
+  };
+}
+
+// ---------- Usage events (cost / token usage for this conversation)
+
+type ConversationUsageEvent = {
+  spanId: string;
+  parentSpanId: string;
+  traceId: string;
+  timestamp: string;
+  generationType: string;
+  model: string;
+  provider: string;
+  agentId: string;
+  subAgentId: string;
+  conversationId: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  estimatedCostUsd: number;
+  finishReason: string;
+  status: 'failed' | 'succeeded';
+};
+
+function deriveUsageEvents(
+  spans: SigNozListItem[],
+  conversationId: string
+): ConversationUsageEvent[] {
+  return spans.map((row) => {
+    const inputTokens = getNumber(row, SPAN_KEYS.GEN_AI_USAGE_INPUT_TOKENS, 0);
+    const outputTokens = getNumber(row, SPAN_KEYS.GEN_AI_USAGE_OUTPUT_TOKENS, 0);
+    const cacheReadTokens = getNumber(row, SPAN_KEYS.GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS, 0);
+    const cacheCreationTokens = getNumber(
+      row,
+      SPAN_KEYS.GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS,
+      0
+    );
+    const cost = getNumber(row, SPAN_KEYS.GEN_AI_COST_ESTIMATED_USD, 0);
+
+    return {
+      spanId: getString(row, SPAN_KEYS.SPAN_ID, ''),
+      parentSpanId: getString(row, SPAN_KEYS.PARENT_SPAN_ID, ''),
+      traceId: getString(row, SPAN_KEYS.TRACE_ID, ''),
+      timestamp: row.timestamp || getString(row, SPAN_KEYS.TIMESTAMP, ''),
+      generationType: getString(row, SPAN_KEYS.AI_TELEMETRY_GENERATION_TYPE, 'unknown'),
+      model: getString(row, SPAN_KEYS.AI_MODEL_ID, 'unknown'),
+      provider:
+        getString(row, SPAN_KEYS.GEN_AI_RESPONSE_PROVIDER, '') ||
+        getString(row, SPAN_KEYS.AI_MODEL_PROVIDER, ''),
+      agentId: getString(row, SPAN_KEYS.AGENT_ID, ''),
+      subAgentId:
+        getString(row, SPAN_KEYS.SUB_AGENT_ID, '') ||
+        getString(row, SPAN_KEYS.AI_TELEMETRY_SUB_AGENT_ID, ''),
+      conversationId,
+      inputTokens,
+      outputTokens,
+      totalTokens: inputTokens + outputTokens,
+      cacheReadTokens,
+      cacheCreationTokens,
+      estimatedCostUsd: cost,
+      finishReason: getString(row, SPAN_KEYS.AI_RESPONSE_FINISH_REASON, ''),
+      status: getField(row, SPAN_KEYS.HAS_ERROR) === true ? 'failed' : 'succeeded',
+    };
+  });
+}
+
+export async function GET(
+  req: NextRequest,
+  context: RouteContext<'/api/traces/conversations/[conversationId]'>
+) {
+  const authResult = await requireApiRouteSessionOrBearer(req);
+  if (!authResult.ok) {
+    return authResult.response;
+  }
+  const { conversationId } = await context.params;
+  if (!conversationId) {
+    return NextResponse.json({ error: 'Conversation ID is required' }, { status: 400 });
+  }
+
+  // Get tenantId and projectId from URL search params
+  const url = new URL(req.url);
+  const tenantId = url.searchParams.get('tenantId') || 'default';
+  const projectId = url.searchParams.get('projectId') || undefined;
+
+  // Optional time range params to narrow the ClickHouse scan window
+  const startParam = url.searchParams.get('start');
+  const endParam = url.searchParams.get('end');
+
+  try {
+    const logger = getLogger('conversation-detail');
+    const t0 = Date.now();
+
+    const timeRange = await getConversationTimeRange({
+      startParam,
+      endParam,
+      projectId,
+      tenantId,
+      conversationId,
+    });
+
+    if (timeRange.notFound) {
+      return NextResponse.json({ error: 'Conversation not found' }, { status: 404 });
+    }
+
+    const { start, end } = timeRange;
+    const tTimeRange = Date.now();
+
+    const allSpansPayload = buildAllSpansPayload(conversationId, start, end, projectId);
+
+    const batchStart = Date.now();
+    const allSpansResp = await signozQuery(allSpansPayload, tenantId, authResult.headers);
+    logger.info(
+      { batch: 'all-spans', queries: 1, ms: Date.now() - batchStart },
+      'signoz batch complete'
+    );
+    const tSignoz = Date.now();
+
+    const allRows = allSpansResp.results.flatMap((r) => r.rows ?? []);
+    if (allRows.length >= SPAN_QUERY_LIMIT) {
+      logger.warn(
+        { conversationId, rowCount: allRows.length, limit: SPAN_QUERY_LIMIT },
+        'span query hit limit, results may be truncated'
+      );
+    }
+
+    const classified = classifySpans(allRows);
+    const {
+      toolCallSpans,
+      userMessageSpans,
+      aiAssistantSpans,
+      aiGenerationSpans,
+      aiStreamingSpans,
+    } = classified;
+
+    const usageEvents = deriveUsageEvents(
+      [...aiGenerationSpans, ...aiStreamingSpans],
+      conversationId
+    );
+
+    const cacheStateBySpanId = new Map<string, CacheState>();
+    const llmCallsChronological = [...aiGenerationSpans, ...aiStreamingSpans].sort((a, b) =>
+      String(a.timestamp ?? '').localeCompare(String(b.timestamp ?? ''))
+    );
+    for (const llmSpan of llmCallsChronological) {
+      const spanId = getString(llmSpan, SPAN_KEYS.SPAN_ID, '');
+      if (!spanId) continue;
+      // Resolve the provider for the caching-support gate: gateway-routed spans
+      // report ai.model.provider='gateway' (not caching-capable) while the real
+      // backend that owns the cache keys is in gen_ai.response.provider. Prefer
+      // the resolved provider so gateway deployments don't misclassify HITs.
+      const cachingProvider = resolveCachingProvider({
+        requestProvider: getString(llmSpan, SPAN_KEYS.AI_MODEL_PROVIDER, ''),
+        responseProvider: getString(llmSpan, SPAN_KEYS.GEN_AI_RESPONSE_PROVIDER, ''),
+      });
+      const cacheReadTokens = getNumber(llmSpan, SPAN_KEYS.GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS, 0);
+      const markerCount = getNumber(llmSpan, SPAN_KEYS.CACHE_INTENT_MARKER_COUNT, 0);
+      const providerSupportsCaching = cachingProvider
+        ? isProviderSupportedForCaching(cachingProvider)
+        : true;
+      const state = deriveCacheState({
+        markerCount,
+        cacheRead: cacheReadTokens,
+        providerSupportsCaching,
+      });
+      cacheStateBySpanId.set(spanId, state);
+    }
+    const {
+      agentGenerationSpans,
+      spansWithErrorsList,
+      contextResolutionSpans,
+      contextHandleSpans,
+      contextFetcherSpans,
+      artifactProcessingSpans,
+      toolApprovalRequestedSpans,
+      toolApprovalApprovedSpans,
+      toolApprovalDeniedSpans,
+      compressionSpans,
+      maxStepsReachedSpans,
+      streamLifetimeExceededSpans,
+      durableToolExecutionSpans,
+    } = classified;
+    const durationSpans = allRows;
+
+    logger.info(
+      {
+        conversationId,
+        timeRangeMs: tTimeRange - t0,
+        signozMs: tSignoz - tTimeRange,
+        spanDays: Math.round((end - start) / 86_400_000),
+      },
+      'conversation detail timing'
+    );
+
+    let agentId: string | null = null;
+    let agentName: string | null = null;
+    let invocationType: string | null = null;
+    let invocationEntryPoint: string | null = null;
+    let triggerId: string | null = null;
+    let triggerInvocationId: string | null = null;
+    let triggerRunAsUserId: string | null = null;
+    for (const s of userMessageSpans) {
+      agentId = getString(s, SPAN_KEYS.AGENT_ID, '') || null;
+      agentName = getString(s, SPAN_KEYS.AGENT_NAME, '') || null;
+      const spanInvocationType = getString(s, SPAN_KEYS.INVOCATION_TYPE, '');
+      if (spanInvocationType && !invocationType) {
+        invocationType = spanInvocationType;
+        invocationEntryPoint = getString(s, SPAN_KEYS.INVOCATION_ENTRY_POINT, '') || null;
+        triggerId = getString(s, SPAN_KEYS.TRIGGER_ID, '') || null;
+        triggerInvocationId = getString(s, SPAN_KEYS.TRIGGER_INVOCATION_ID, '') || null;
+        triggerRunAsUserId = getString(s, SPAN_KEYS.TRIGGER_RUN_AS_USER_ID, '') || null;
+      }
+      if (agentId || agentName) break;
+    }
+
+    // Build parent-span map from durationSpans (already fetched in builder query)
+    const spanIdToParentSpanId = new Map<string, string | null>();
+    for (const span of durationSpans) {
+      const spanId = getString(span, SPAN_KEYS.SPAN_ID, '');
+      const parentSpanId = getString(span, SPAN_KEYS.PARENT_SPAN_ID, '') || null;
+      if (spanId) {
+        spanIdToParentSpanId.set(spanId, parentSpanId);
+      }
+    }
+
+    // Build context breakdown map from agentGenerationSpans (breakdown attrs now in builder query)
+    type ContextBreakdownData = {
+      components: Record<string, number>;
+      total: number;
+    };
+    const spanIdToContextBreakdown = new Map<string, ContextBreakdownData>();
+    for (const span of agentGenerationSpans) {
+      const spanId = getString(span, SPAN_KEYS.SPAN_ID, '');
+      const totalValue = getField(span, CONTEXT_BREAKDOWN_TOTAL_SPAN_ATTRIBUTE);
+      if (spanId && totalValue !== undefined && totalValue !== '' && totalValue !== null) {
+        const data: Record<string, unknown> = {};
+        data[CONTEXT_BREAKDOWN_TOTAL_SPAN_ATTRIBUTE] = totalValue;
+        for (const def of V1_BREAKDOWN_SCHEMA) {
+          data[def.spanAttribute] = getField(span, def.spanAttribute);
+        }
+        spanIdToContextBreakdown.set(
+          spanId,
+          parseContextBreakdownFromSpan(data, V1_BREAKDOWN_SCHEMA)
+        );
+      }
+    }
+
+    // activities
+    type Activity = {
+      id: string;
+      messageId?: string;
+      type:
+        | 'tool_call'
+        | 'ai_generation'
+        | 'agent_generation'
+        | 'context_fetch'
+        | 'context_resolution'
+        | 'user_message'
+        | 'ai_assistant_message'
+        | 'ai_model_streamed_text'
+        | 'artifact_processing'
+        | 'tool_approval_requested'
+        | 'tool_approval_approved'
+        | 'tool_approval_denied'
+        | 'compression'
+        | 'max_steps_reached'
+        | 'stream_lifetime_exceeded'
+        | 'durable_tool_execution';
+      description: string;
+      timestamp: string;
+      parentSpanId?: string | null;
+      status: (typeof ACTIVITY_STATUS)[keyof typeof ACTIVITY_STATUS];
+      subAgentId?: string;
+      subAgentName?: string;
+      result?: string;
+      // tool approval attributes
+      approvalToolName?: string;
+      approvalToolCallId?: string;
+      // ai
+      aiModel?: string;
+      inputTokens?: number;
+      outputTokens?: number;
+      costUsd?: number;
+      serviceTier?: string;
+      aiResponseContent?: string;
+      aiResponseTimestamp?: string;
+      // user
+      messageContent?: string;
+      messageParts?: string;
+      // trigger/invocation attributes
+      invocationType?: string;
+      invocationEntryPoint?: string;
+      triggerId?: string;
+      triggerInvocationId?: string;
+      // context resolution
+      contextConfigId?: string;
+      contextAgentAgentId?: string;
+      contextHeadersKeys?: string[];
+      contextTrigger?: string;
+      contextStatusDescription?: string;
+      contextUrl?: string;
+      // tool specifics
+      toolName?: string;
+      toolType?: string;
+      toolPurpose?: string;
+      mcpServerId?: string;
+      mcpServerName?: string;
+      toolCallArgs?: string;
+      toolCallResult?: string;
+      toolStatusMessage?: string;
+      aiTelemetryFunctionId?: string;
+      // delegation/transfer
+      delegationFromSubAgentId?: string;
+      delegationToSubAgentId?: string;
+      delegationType?: 'internal' | 'external' | 'team';
+      transferFromSubAgentId?: string;
+      transferToSubAgentId?: string;
+      // streaming text
+      aiStreamTextContent?: string;
+      aiStreamTextModel?: string;
+      aiStreamTextOperationId?: string;
+      aiTelemetryPhase?: string;
+      // context breakdown (for AI streaming spans)
+      contextBreakdown?: {
+        components: Record<string, number>;
+        total: number;
+      };
+      // artifact processing specifics
+      artifactId?: string;
+      artifactType?: string;
+      artifactName?: string;
+      artifactDescription?: string;
+      artifactSubAgentId?: string;
+      artifactToolCallId?: string;
+      artifactIsOversized?: boolean;
+      artifactRetrievalBlocked?: boolean;
+      artifactOriginalTokenSize?: number;
+      artifactContextWindowSize?: number;
+      hasError?: boolean;
+      otelStatusCode?: string;
+      otelStatusDescription?: string;
+      // compression specifics
+      compressionType?: string;
+      compressionGeneratedTokens?: number;
+      compressionTotalContextTokens?: number;
+      compressionTriggerAt?: number;
+      compressionOutputTokens?: number;
+      compressionRatio?: number;
+      compressionError?: string;
+      compressionSummary?: string;
+      maxStepsReached?: boolean;
+      stepsCompleted?: number;
+      maxSteps?: number;
+      streamCleanupReason?: string;
+      streamMaxLifetimeMs?: number;
+      streamBufferSizeBytes?: number;
+      // durable tool execution
+      toolCallId?: string;
+      toolResponseContent?: string;
+      // prompt caching (D11 SPAN_KEYS + derived state)
+      cacheReadTokens?: number;
+      cacheCreationTokens?: number;
+      cacheMarkerCount?: number;
+      cachePrefixSignature?: string;
+      cacheState?: CacheState;
+    };
+
+    const activities: Activity[] = [];
+
+    // tool calls → activities
+    for (const span of toolCallSpans) {
+      const name = getString(span, SPAN_KEYS.AI_TOOL_CALL_NAME, 'Unknown Tool');
+
+      // Skip thinking_complete tool calls from the timeline
+      if (name === 'thinking_complete') {
+        continue;
+      }
+
+      const hasError = getField(span, SPAN_KEYS.HAS_ERROR) === true;
+      const durMs = getNumber(span, SPAN_KEYS.DURATION_NANO) / 1e6;
+      const toolType = getString(span, SPAN_KEYS.AI_TOOL_TYPE, '');
+      const toolPurpose = getString(span, SPAN_KEYS.TOOL_PURPOSE, '');
+      const mcpServerId = getString(span, SPAN_KEYS.AI_TOOL_CALL_MCP_SERVER_ID, '');
+      const mcpServerName = getString(span, SPAN_KEYS.AI_TOOL_CALL_MCP_SERVER_NAME, '');
+      const aiTelemetryFunctionId = getString(span, SPAN_KEYS.AI_TELEMETRY_FUNCTION_ID, '');
+      const delegationFromSubAgentId = getString(span, SPAN_KEYS.DELEGATION_FROM_SUB_AGENT_ID, '');
+      const delegationToSubAgentId = getString(span, SPAN_KEYS.DELEGATION_TO_SUB_AGENT_ID, '');
+      const delegationType = getString(span, SPAN_KEYS.DELEGATION_TYPE, '');
+      const transferFromSubAgentId = getString(span, SPAN_KEYS.TRANSFER_FROM_SUB_AGENT_ID, '');
+      const transferToSubAgentId = getString(span, SPAN_KEYS.TRANSFER_TO_SUB_AGENT_ID, '');
+
+      const toolCallArgs = getString(span, SPAN_KEYS.AI_TOOL_CALL_ARGS, '');
+      const toolCallResult = getString(span, SPAN_KEYS.AI_TOOL_CALL_RESULT, '');
+
+      const statusMessage = hasError
+        ? getString(span, SPAN_KEYS.STATUS_MESSAGE, '') ||
+          getString(span, SPAN_KEYS.OTEL_STATUS_DESCRIPTION, '')
+        : '';
+
+      const toolCall = getString(span, SPAN_KEYS.SPAN_ID, '');
+      activities.push({
+        id: toolCall,
+        type: ACTIVITY_TYPES.TOOL_CALL,
+        toolName: name,
+        description: hasError && statusMessage ? `Tool ${name} failed` : `Called ${name}`,
+        timestamp: span.timestamp,
+        parentSpanId: spanIdToParentSpanId.get(toolCall) || undefined,
+        status: hasError ? ACTIVITY_STATUS.ERROR : ACTIVITY_STATUS.SUCCESS,
+        subAgentName: getString(span, SPAN_KEYS.SUB_AGENT_NAME, ACTIVITY_NAMES.UNKNOWN_AGENT),
+        subAgentId: getString(span, SPAN_KEYS.SUB_AGENT_ID, ACTIVITY_NAMES.UNKNOWN_AGENT),
+        result: hasError ? `Tool call failed (${durMs.toFixed(2)}ms)` : `${durMs.toFixed(2)}ms`,
+        toolType: toolType || undefined,
+        toolPurpose: toolPurpose || undefined,
+        mcpServerId: mcpServerId || undefined,
+        mcpServerName: mcpServerName || undefined,
+        aiTelemetryFunctionId: aiTelemetryFunctionId || undefined,
+        delegationFromSubAgentId: delegationFromSubAgentId || undefined,
+        delegationToSubAgentId: delegationToSubAgentId || undefined,
+        delegationType: (delegationType as 'internal' | 'external' | 'team') || undefined,
+        transferFromSubAgentId: transferFromSubAgentId || undefined,
+        transferToSubAgentId: transferToSubAgentId || undefined,
+        toolCallArgs: toolCallArgs || undefined,
+        toolCallResult: toolCallResult || undefined,
+        toolStatusMessage: statusMessage || undefined,
+      });
+    }
+
+    // context resolution → activities
+    for (const span of contextResolutionSpans) {
+      const hasError = getField(span, SPAN_KEYS.HAS_ERROR) === true;
+      const statusMessage =
+        getString(span, SPAN_KEYS.STATUS_MESSAGE) ||
+        getString(span, SPAN_KEYS.OTEL_STATUS_DESCRIPTION, '');
+
+      // context keys maybe JSON
+      let keys: string[] | undefined;
+      const rawKeys = getField(span, SPAN_KEYS.CONTEXT_HEADERS_KEYS);
+      try {
+        if (typeof rawKeys === 'string') keys = JSON.parse(rawKeys);
+        else if (Array.isArray(rawKeys)) keys = rawKeys as string[];
+      } catch {}
+
+      const contextResolution = getString(span, SPAN_KEYS.SPAN_ID, '');
+      activities.push({
+        id: contextResolution,
+        type: ACTIVITY_TYPES.CONTEXT_RESOLUTION,
+        description: `Context fetch ${hasError ? 'failed' : 'completed'}`,
+        timestamp: span.timestamp,
+        parentSpanId: spanIdToParentSpanId.get(contextResolution) || undefined,
+        status: hasError ? ACTIVITY_STATUS.ERROR : ACTIVITY_STATUS.SUCCESS,
+        contextStatusDescription: statusMessage || undefined,
+        contextUrl: getString(span, SPAN_KEYS.CONTEXT_URL, '') || undefined,
+        contextConfigId: getString(span, SPAN_KEYS.CONTEXT_CONFIG_ID, '') || undefined,
+        contextAgentAgentId: getString(span, SPAN_KEYS.CONTEXT_AGENT_ID, '') || undefined,
+        contextHeadersKeys: keys,
+      });
+    }
+
+    // context handle → activities
+    for (const span of contextHandleSpans) {
+      const hasError = getField(span, SPAN_KEYS.HAS_ERROR) === true;
+      const statusMessage =
+        getString(span, SPAN_KEYS.STATUS_MESSAGE) ||
+        getString(span, SPAN_KEYS.OTEL_STATUS_DESCRIPTION, '');
+
+      // context keys maybe JSON
+      let keys: string[] | undefined;
+      const rawKeys = getField(span, SPAN_KEYS.CONTEXT_HEADERS_KEYS);
+      try {
+        if (typeof rawKeys === 'string') keys = JSON.parse(rawKeys);
+        else if (Array.isArray(rawKeys)) keys = rawKeys as string[];
+      } catch {}
+
+      const contextHandle = getString(span, SPAN_KEYS.SPAN_ID, '');
+      activities.push({
+        id: contextHandle,
+        type: ACTIVITY_TYPES.CONTEXT_RESOLUTION,
+        description: `Context handle ${hasError ? 'failed' : 'completed'}`,
+        timestamp: span.timestamp,
+        parentSpanId: spanIdToParentSpanId.get(contextHandle) || undefined,
+        status: hasError ? ACTIVITY_STATUS.ERROR : ACTIVITY_STATUS.SUCCESS,
+        contextStatusDescription: statusMessage || undefined,
+        contextUrl: getString(span, SPAN_KEYS.CONTEXT_URL, '') || undefined,
+        contextConfigId: getString(span, SPAN_KEYS.CONTEXT_CONFIG_ID, '') || undefined,
+        contextAgentAgentId: getString(span, SPAN_KEYS.CONTEXT_AGENT_ID, '') || undefined,
+        contextHeadersKeys: keys,
+      });
+    }
+
+    // user messages
+    for (const span of userMessageSpans) {
+      const hasError = getField(span, SPAN_KEYS.HAS_ERROR) === true;
+      const userMessageSpanId = getString(span, SPAN_KEYS.SPAN_ID, '');
+      const invocationType = getString(span, SPAN_KEYS.INVOCATION_TYPE, '');
+      const spanEntryPoint = getString(span, SPAN_KEYS.INVOCATION_ENTRY_POINT, '');
+      const triggerId = getString(span, SPAN_KEYS.TRIGGER_ID, '');
+      const triggerInvocationId = getString(span, SPAN_KEYS.TRIGGER_INVOCATION_ID, '');
+
+      // Determine description based on invocation type
+      const isTriggerInvocation =
+        invocationType === 'trigger' || invocationType === 'scheduled_trigger';
+      const isSlackMessage = invocationType === 'slack';
+      const entryPointLabel = spanEntryPoint ? ` (${spanEntryPoint.replace(/_/g, ' ')})` : '';
+      const description = isTriggerInvocation
+        ? 'Trigger invocation received'
+        : isSlackMessage
+          ? `Slack message received${entryPointLabel}`
+          : 'User sent a message';
+
+      activities.push({
+        id: userMessageSpanId,
+        messageId: getString(span, SPAN_KEYS.MESSAGE_ID, '') || undefined,
+        type: ACTIVITY_TYPES.USER_MESSAGE,
+        description,
+        // Anchor at the span's intrinsic start (true request arrival), matching every
+        // other activity (e.g. AI generation uses span.timestamp). MESSAGE_TIMESTAMP is
+        // set mid-handler (after context resolution), so it plots the message ~late and
+        // makes TTFT — measured from request arrival — appear larger than the duration.
+        timestamp: span.timestamp,
+        parentSpanId: spanIdToParentSpanId.get(userMessageSpanId) || undefined,
+        status: hasError ? ACTIVITY_STATUS.ERROR : ACTIVITY_STATUS.SUCCESS,
+        subAgentId: AGENT_IDS.USER,
+        subAgentName: isTriggerInvocation
+          ? 'Trigger'
+          : isSlackMessage
+            ? 'Slack'
+            : ACTIVITY_NAMES.USER,
+        result: hasError ? 'Message processing failed' : 'Message received successfully',
+        messageContent: getString(span, SPAN_KEYS.MESSAGE_CONTENT, ''),
+        messageParts: getString(span, SPAN_KEYS.MESSAGE_PARTS, ''),
+        invocationType: invocationType || undefined,
+        invocationEntryPoint: spanEntryPoint || undefined,
+        triggerId: triggerId || undefined,
+        triggerInvocationId: triggerInvocationId || undefined,
+      });
+    }
+
+    // ai assistant messages
+    for (const span of aiAssistantSpans) {
+      const hasError = getField(span, SPAN_KEYS.HAS_ERROR) === true;
+      const durMs = getNumber(span, SPAN_KEYS.DURATION_NANO) / 1e6;
+      const aiAssistantMessageSpanId = getString(span, SPAN_KEYS.SPAN_ID, '');
+      const statusMessage = hasError
+        ? getString(span, SPAN_KEYS.STATUS_MESSAGE, '') ||
+          getString(span, SPAN_KEYS.OTEL_STATUS_DESCRIPTION, '')
+        : '';
+      activities.push({
+        id: aiAssistantMessageSpanId,
+        messageId: getString(span, SPAN_KEYS.MESSAGE_ID, '') || undefined,
+        type: ACTIVITY_TYPES.AI_ASSISTANT_MESSAGE,
+        description: 'AI Assistant responded',
+        timestamp: getString(span, SPAN_KEYS.AI_RESPONSE_TIMESTAMP),
+        parentSpanId: spanIdToParentSpanId.get(aiAssistantMessageSpanId) || undefined,
+        status: hasError ? ACTIVITY_STATUS.ERROR : ACTIVITY_STATUS.SUCCESS,
+        subAgentId: getString(span, SPAN_KEYS.SUB_AGENT_ID, ACTIVITY_NAMES.UNKNOWN_AGENT),
+        subAgentName: getString(span, SPAN_KEYS.SUB_AGENT_NAME, ACTIVITY_NAMES.UNKNOWN_AGENT),
+        result: hasError
+          ? 'AI response failed'
+          : `AI response sent successfully (${durMs.toFixed(2)}ms)`,
+        aiResponseContent: getString(span, SPAN_KEYS.AI_RESPONSE_CONTENT, ''),
+        aiResponseTimestamp: getString(span, SPAN_KEYS.AI_RESPONSE_TIMESTAMP, '') || undefined,
+        hasError,
+        otelStatusDescription: statusMessage || undefined,
+      });
+    }
+
+    // ai generations
+    for (const span of aiGenerationSpans) {
+      const genType = getString(span, SPAN_KEYS.AI_TELEMETRY_GENERATION_TYPE, '');
+
+      const hasError = getField(span, SPAN_KEYS.HAS_ERROR) === true;
+      const durMs = getNumber(span, SPAN_KEYS.DURATION_NANO) / 1e6;
+
+      const aiGeneration = getString(span, SPAN_KEYS.SPAN_ID, '');
+      const genResponseText = getString(span, SPAN_KEYS.AI_RESPONSE_TEXT, '');
+      const formatted = genType
+        ? formatGenerationType(genType, genResponseText)
+        : { description: 'AI model generating text' };
+      const cacheRead = getNumber(span, SPAN_KEYS.GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS, 0);
+      const cacheCreation = getNumber(span, SPAN_KEYS.GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS, 0);
+      const markerCount = getNumber(span, SPAN_KEYS.CACHE_INTENT_MARKER_COUNT, 0);
+      const prefixSig = getString(span, SPAN_KEYS.CACHE_INTENT_PREFIX_SIGNATURE, '');
+      activities.push({
+        id: aiGeneration,
+        type: ACTIVITY_TYPES.AI_GENERATION,
+        description: formatted.description,
+        timestamp: span.timestamp,
+        parentSpanId: spanIdToParentSpanId.get(aiGeneration) || undefined,
+        status: hasError ? ACTIVITY_STATUS.ERROR : ACTIVITY_STATUS.SUCCESS,
+        subAgentId: getString(span, SPAN_KEYS.AI_TELEMETRY_SUB_AGENT_ID, '') || undefined,
+        subAgentName: getString(span, SPAN_KEYS.AI_TELEMETRY_SUB_AGENT_NAME, '') || undefined,
+        result: hasError ? 'AI generation failed' : (formatted.result ?? `${durMs.toFixed(2)}ms`),
+        aiModel: getString(span, SPAN_KEYS.AI_MODEL_ID, 'Unknown Model'),
+        inputTokens: getNumber(span, SPAN_KEYS.GEN_AI_USAGE_INPUT_TOKENS, 0),
+        outputTokens: getNumber(span, SPAN_KEYS.GEN_AI_USAGE_OUTPUT_TOKENS, 0),
+        costUsd: getNumber(span, SPAN_KEYS.GEN_AI_COST_ESTIMATED_USD, 0) || undefined,
+        aiTelemetryFunctionId: getString(span, SPAN_KEYS.AI_TELEMETRY_FUNCTION_ID, '') || undefined,
+        aiTelemetryPhase: getString(span, SPAN_KEYS.AI_TELEMETRY_METADATA_PHASE, '') || undefined,
+        cacheReadTokens: cacheRead || undefined,
+        cacheCreationTokens: cacheCreation || undefined,
+        cacheMarkerCount: markerCount || undefined,
+        cachePrefixSignature: prefixSig || undefined,
+        cacheState: cacheStateBySpanId.get(aiGeneration),
+      });
+    }
+
+    for (const span of agentGenerationSpans) {
+      const hasError = getField(span, SPAN_KEYS.HAS_ERROR) === true;
+      const statusMessage =
+        getString(span, SPAN_KEYS.STATUS_MESSAGE) ||
+        getString(span, SPAN_KEYS.OTEL_STATUS_DESCRIPTION, '');
+      const otelStatusCode = getString(span, SPAN_KEYS.OTEL_STATUS_CODE, '');
+      const otelStatusDescription = getString(span, SPAN_KEYS.OTEL_STATUS_DESCRIPTION, '');
+
+      const agentGeneration = getString(span, SPAN_KEYS.SPAN_ID, '');
+      activities.push({
+        id: agentGeneration,
+        type: ACTIVITY_TYPES.AGENT_GENERATION,
+        description: hasError ? 'Agent generation failed' : 'Agent generation',
+        timestamp: span.timestamp,
+        parentSpanId: spanIdToParentSpanId.get(agentGeneration) || undefined,
+        status: hasError ? ACTIVITY_STATUS.ERROR : ACTIVITY_STATUS.SUCCESS,
+        result: hasError
+          ? statusMessage || 'Agent generation failed'
+          : 'Agent generation completed',
+        hasError,
+        otelStatusCode: hasError ? otelStatusCode : undefined,
+        otelStatusDescription: hasError ? otelStatusDescription || statusMessage : undefined,
+        subAgentId: getString(span, SPAN_KEYS.SUB_AGENT_ID, ACTIVITY_NAMES.UNKNOWN_AGENT),
+        subAgentName: getString(span, SPAN_KEYS.SUB_AGENT_NAME, ACTIVITY_NAMES.UNKNOWN_AGENT),
+        contextBreakdown: spanIdToContextBreakdown.get(agentGeneration),
+      });
+    }
+
+    // ai streaming text
+    for (const span of aiStreamingSpans) {
+      const hasError = getField(span, SPAN_KEYS.HAS_ERROR) === true;
+      const durMs = getNumber(span, SPAN_KEYS.DURATION_NANO) / 1e6;
+      const aiStreamingText = getString(span, SPAN_KEYS.SPAN_ID, '');
+      const statusMessage = hasError ? getString(span, SPAN_KEYS.STATUS_MESSAGE, '') : '';
+      const streamGenType = getString(span, SPAN_KEYS.AI_TELEMETRY_GENERATION_TYPE, '');
+      const streamResponseText = getString(span, SPAN_KEYS.AI_RESPONSE_TEXT, '');
+      const streamFormatted = streamGenType
+        ? formatGenerationType(streamGenType, streamResponseText)
+        : { description: 'AI model streaming text' };
+      const cacheReadStream = getNumber(span, SPAN_KEYS.GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS, 0);
+      const cacheCreationStream = getNumber(
+        span,
+        SPAN_KEYS.GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS,
+        0
+      );
+      const markerCountStream = getNumber(span, SPAN_KEYS.CACHE_INTENT_MARKER_COUNT, 0);
+      const prefixSigStream = getString(span, SPAN_KEYS.CACHE_INTENT_PREFIX_SIGNATURE, '');
+      activities.push({
+        id: aiStreamingText,
+        type: ACTIVITY_TYPES.AI_MODEL_STREAMED_TEXT,
+        description: streamFormatted.description,
+        timestamp: span.timestamp,
+        parentSpanId: spanIdToParentSpanId.get(aiStreamingText) || undefined,
+        status: hasError ? ACTIVITY_STATUS.ERROR : ACTIVITY_STATUS.SUCCESS,
+        subAgentId: getString(span, SPAN_KEYS.AI_TELEMETRY_SUB_AGENT_ID, '') || undefined,
+        subAgentName: getString(span, SPAN_KEYS.AI_TELEMETRY_SUB_AGENT_NAME, '') || undefined,
+        result: hasError
+          ? 'AI streaming failed'
+          : (streamFormatted.result ?? `${durMs.toFixed(2)}ms`),
+        aiStreamTextContent: truncateText(
+          getString(span, SPAN_KEYS.AI_RESPONSE_TEXT, ''),
+          AI_RESPONSE_TEXT_TRUNCATE_CHARS
+        ),
+        aiStreamTextModel: getString(span, SPAN_KEYS.AI_MODEL_ID, 'Unknown Model'),
+        aiStreamTextOperationId: getString(span, SPAN_KEYS.AI_OPERATION_ID, '') || undefined,
+        inputTokens: getNumber(span, SPAN_KEYS.GEN_AI_USAGE_INPUT_TOKENS, 0),
+        outputTokens: getNumber(span, SPAN_KEYS.GEN_AI_USAGE_OUTPUT_TOKENS, 0),
+        costUsd: getNumber(span, SPAN_KEYS.GEN_AI_COST_ESTIMATED_USD, 0) || undefined,
+        aiTelemetryFunctionId: getString(span, SPAN_KEYS.AI_TELEMETRY_FUNCTION_ID, '') || undefined,
+        aiTelemetryPhase: getString(span, SPAN_KEYS.AI_TELEMETRY_METADATA_PHASE, '') || undefined,
+        otelStatusDescription: statusMessage || undefined,
+        cacheReadTokens: cacheReadStream || undefined,
+        cacheCreationTokens: cacheCreationStream || undefined,
+        cacheMarkerCount: markerCountStream || undefined,
+        cachePrefixSignature: prefixSigStream || undefined,
+        cacheState: cacheStateBySpanId.get(aiStreamingText),
+      });
+    }
+
+    // context fetchers
+    for (const span of contextFetcherSpans) {
+      const hasError = getField(span, SPAN_KEYS.HAS_ERROR) === true;
+      const contextFetcher = getString(span, SPAN_KEYS.SPAN_ID, '');
+      const statusMessage = hasError ? getString(span, SPAN_KEYS.STATUS_MESSAGE, '') : '';
+      activities.push({
+        id: contextFetcher,
+        type: ACTIVITY_TYPES.CONTEXT_FETCH,
+        description: '',
+        timestamp: span.timestamp,
+        parentSpanId: spanIdToParentSpanId.get(contextFetcher) || undefined,
+        status: hasError ? ACTIVITY_STATUS.ERROR : ACTIVITY_STATUS.SUCCESS,
+        subAgentId: UNKNOWN_VALUE,
+        subAgentName: 'Context Fetcher',
+        result: hasError
+          ? 'Context fetch failed'
+          : getString(span, SPAN_KEYS.HTTP_URL, 'Unknown URL'),
+        otelStatusDescription: statusMessage || undefined,
+      });
+    }
+
+    // artifact processing
+    for (const span of artifactProcessingSpans) {
+      const hasError = getField(span, SPAN_KEYS.HAS_ERROR) === true;
+      const artifactName = getString(span, SPAN_KEYS.ARTIFACT_NAME, '');
+      const artifactType = getString(span, SPAN_KEYS.ARTIFACT_TYPE, '');
+      const artifactDescription = getString(span, SPAN_KEYS.ARTIFACT_DESCRIPTION, '');
+      const statusMessage = hasError ? getString(span, SPAN_KEYS.STATUS_MESSAGE, '') : '';
+      const isOversized = getField(span, SPAN_KEYS.ARTIFACT_IS_OVERSIZED) === true;
+      const retrievalBlocked = getField(span, SPAN_KEYS.ARTIFACT_RETRIEVAL_BLOCKED) === true;
+      const originalTokenSize = getNumber(span, SPAN_KEYS.ARTIFACT_ORIGINAL_TOKEN_SIZE, 0);
+      const contextWindowSize = getNumber(span, SPAN_KEYS.ARTIFACT_CONTEXT_WINDOW_SIZE, 0);
+
+      const artifactProcessing = getString(span, SPAN_KEYS.SPAN_ID, '');
+      activities.push({
+        id: artifactProcessing,
+        type: 'artifact_processing',
+        description: 'Artifact processed',
+        timestamp: span.timestamp,
+        parentSpanId: spanIdToParentSpanId.get(artifactProcessing) || undefined,
+        status: hasError ? ACTIVITY_STATUS.ERROR : ACTIVITY_STATUS.SUCCESS,
+        subAgentId: getString(span, SPAN_KEYS.SUB_AGENT_ID, ACTIVITY_NAMES.UNKNOWN_AGENT),
+        subAgentName: getString(span, SPAN_KEYS.SUB_AGENT_NAME, ACTIVITY_NAMES.UNKNOWN_AGENT),
+        result: hasError ? 'Artifact processing failed' : 'Artifact processed successfully',
+        artifactId: getString(span, SPAN_KEYS.ARTIFACT_ID, '') || undefined,
+        artifactType: artifactType || undefined,
+        artifactName: artifactName || undefined,
+        artifactDescription: artifactDescription || undefined,
+        artifactToolCallId: getString(span, SPAN_KEYS.ARTIFACT_TOOL_CALL_ID, '') || undefined,
+        artifactIsOversized: isOversized || undefined,
+        artifactRetrievalBlocked: retrievalBlocked || undefined,
+        artifactOriginalTokenSize: originalTokenSize > 0 ? originalTokenSize : undefined,
+        artifactContextWindowSize: contextWindowSize > 0 ? contextWindowSize : undefined,
+        otelStatusDescription: statusMessage || undefined,
+      });
+    }
+
+    // tool approval requested
+    for (const span of toolApprovalRequestedSpans) {
+      const hasError = getField(span, SPAN_KEYS.HAS_ERROR) === true;
+      const toolName = getString(span, SPAN_KEYS.TOOL_NAME, '');
+      const toolCallId = getString(span, SPAN_KEYS.TOOL_CALL_ID, '');
+
+      const approvalRequested = getString(span, SPAN_KEYS.SPAN_ID, '');
+      activities.push({
+        id: approvalRequested,
+        type: ACTIVITY_TYPES.TOOL_APPROVAL_REQUESTED,
+        description: `Approval requested for ${toolName}`,
+        timestamp: span.timestamp,
+        parentSpanId: spanIdToParentSpanId.get(approvalRequested) || undefined,
+        status: hasError ? ACTIVITY_STATUS.ERROR : ACTIVITY_STATUS.PENDING,
+        subAgentId: getString(span, SPAN_KEYS.SUB_AGENT_ID, ACTIVITY_NAMES.UNKNOWN_AGENT),
+        subAgentName: getString(span, SPAN_KEYS.SUB_AGENT_NAME, ACTIVITY_NAMES.UNKNOWN_AGENT),
+        result: `Waiting for user approval`,
+        approvalToolName: toolName || undefined,
+        approvalToolCallId: toolCallId || undefined,
+      });
+    }
+
+    // tool approval approved
+    for (const span of toolApprovalApprovedSpans) {
+      const hasError = getField(span, SPAN_KEYS.HAS_ERROR) === true;
+      const toolName = getString(span, SPAN_KEYS.TOOL_NAME, '');
+      const toolCallId = getString(span, SPAN_KEYS.TOOL_CALL_ID, '');
+
+      const approvalApproved = getString(span, SPAN_KEYS.SPAN_ID, '');
+      activities.push({
+        id: approvalApproved,
+        type: ACTIVITY_TYPES.TOOL_APPROVAL_APPROVED,
+        description: `${toolName} approved by user`,
+        timestamp: span.timestamp,
+        parentSpanId: spanIdToParentSpanId.get(approvalApproved) || undefined,
+        status: hasError ? ACTIVITY_STATUS.ERROR : ACTIVITY_STATUS.SUCCESS,
+        subAgentId: getString(span, SPAN_KEYS.SUB_AGENT_ID, ACTIVITY_NAMES.UNKNOWN_AGENT),
+        subAgentName: getString(span, SPAN_KEYS.SUB_AGENT_NAME, ACTIVITY_NAMES.UNKNOWN_AGENT),
+        result: `Tool approved by user`,
+        approvalToolName: toolName || undefined,
+        approvalToolCallId: toolCallId || undefined,
+      });
+    }
+
+    // tool approval denied
+    for (const span of toolApprovalDeniedSpans) {
+      const hasError = getField(span, SPAN_KEYS.HAS_ERROR) === true;
+      const toolName = getString(span, SPAN_KEYS.TOOL_NAME, '');
+      const toolCallId = getString(span, SPAN_KEYS.TOOL_CALL_ID, '');
+
+      const approvalDenied = getString(span, SPAN_KEYS.SPAN_ID, '');
+      activities.push({
+        id: approvalDenied,
+        type: ACTIVITY_TYPES.TOOL_APPROVAL_DENIED,
+        description: `${toolName} denied by user`,
+        timestamp: span.timestamp,
+        parentSpanId: spanIdToParentSpanId.get(approvalDenied) || undefined,
+        status: hasError ? ACTIVITY_STATUS.ERROR : ACTIVITY_STATUS.SUCCESS,
+        subAgentId: getString(span, SPAN_KEYS.SUB_AGENT_ID, ACTIVITY_NAMES.UNKNOWN_AGENT),
+        subAgentName: getString(span, SPAN_KEYS.SUB_AGENT_NAME, ACTIVITY_NAMES.UNKNOWN_AGENT),
+        result: `Tool denied by user`,
+        approvalToolName: toolName || undefined,
+        approvalToolCallId: toolCallId || undefined,
+      });
+    }
+
+    // compression spans
+    for (const span of compressionSpans) {
+      const hasError = getField(span, SPAN_KEYS.HAS_ERROR) === true;
+      const compressionSpanId = getString(span, SPAN_KEYS.SPAN_ID, '');
+
+      // Extract compression-specific attributes
+      const compressionType = getString(span, SPAN_KEYS.COMPRESSION_TYPE, '');
+      const generatedTokens = getNumber(span, SPAN_KEYS.COMPRESSION_GENERATED_TOKENS, 0);
+      const totalContextTokens = getNumber(span, SPAN_KEYS.COMPRESSION_TOTAL_CONTEXT_TOKENS, 0);
+      const triggerAt = getNumber(span, SPAN_KEYS.COMPRESSION_TRIGGER_AT, 0);
+      const outputTokens = getNumber(span, SPAN_KEYS.COMPRESSION_RESULT_OUTPUT_TOKENS, 0);
+      const compressionRatio = getNumber(span, SPAN_KEYS.COMPRESSION_RESULT_COMPRESSION_RATIO, 0);
+      const messageCount = getNumber(span, SPAN_KEYS.COMPRESSION_MESSAGE_COUNT, 0);
+      const compressionError = getString(span, SPAN_KEYS.COMPRESSION_ERROR, '');
+      const compressionSummary = getString(span, SPAN_KEYS.COMPRESSION_RESULT_HIGH_LEVEL, '');
+
+      const description =
+        compressionType === 'mid_generation'
+          ? 'Context compacting'
+          : compressionType === 'conversation_level'
+            ? 'Conversation history compacting'
+            : compressionType || 'Unknown';
+
+      activities.push({
+        id: compressionSpanId,
+        type: ACTIVITY_TYPES.COMPRESSION,
+        description,
+        timestamp: span.timestamp,
+        parentSpanId: spanIdToParentSpanId.get(compressionSpanId) || undefined,
+        status: hasError ? ACTIVITY_STATUS.ERROR : ACTIVITY_STATUS.SUCCESS,
+        subAgentId: getString(
+          span,
+          SPAN_KEYS.COMPRESSION_SESSION_ID,
+          getString(span, SPAN_KEYS.SUB_AGENT_ID, ACTIVITY_NAMES.UNKNOWN_AGENT)
+        ),
+        subAgentName: getString(span, SPAN_KEYS.SUB_AGENT_NAME, ACTIVITY_NAMES.UNKNOWN_AGENT),
+        result:
+          compressionError ||
+          `Compressed ${messageCount} messages, ${totalContextTokens} → ${outputTokens} tokens`,
+        // Compression-specific fields
+        compressionType,
+        compressionGeneratedTokens: generatedTokens,
+        compressionTotalContextTokens: totalContextTokens,
+        compressionTriggerAt: triggerAt,
+        compressionOutputTokens: outputTokens,
+        compressionRatio,
+        compressionError: compressionError || undefined,
+        compressionSummary: compressionSummary || undefined,
+      });
+    }
+
+    // max steps reached spans
+    for (const span of maxStepsReachedSpans) {
+      const maxStepsSpanId = getString(span, SPAN_KEYS.SPAN_ID, '');
+      const stepsCompleted = getNumber(span, SPAN_KEYS.AGENT_STEPS_COMPLETED, 0);
+      const maxSteps = getNumber(span, SPAN_KEYS.AGENT_MAX_STEPS, 0);
+      const subAgentId = getString(span, SPAN_KEYS.SUB_AGENT_ID, '');
+      const subAgentName = getString(span, SPAN_KEYS.SUB_AGENT_NAME, '');
+
+      activities.push({
+        id: maxStepsSpanId,
+        type: ACTIVITY_TYPES.MAX_STEPS_REACHED,
+        description: `Max generation steps reached (${stepsCompleted}/${maxSteps})`,
+        timestamp: span.timestamp,
+        parentSpanId: spanIdToParentSpanId.get(maxStepsSpanId) || undefined,
+        status: ACTIVITY_STATUS.WARNING,
+        subAgentId: subAgentId || ACTIVITY_NAMES.UNKNOWN_AGENT,
+        subAgentName: subAgentName || ACTIVITY_NAMES.UNKNOWN_AGENT,
+        result: `Sub-agent stopped after ${stepsCompleted} generation steps (limit: ${maxSteps})`,
+        maxStepsReached: true,
+        stepsCompleted,
+        maxSteps,
+      });
+    }
+
+    for (const span of streamLifetimeExceededSpans) {
+      const spanId = getString(span, SPAN_KEYS.SPAN_ID, '');
+      const cleanupReason = getString(span, SPAN_KEYS.STREAM_CLEANUP_REASON, '');
+      const maxLifetimeMs = getNumber(span, SPAN_KEYS.STREAM_MAX_LIFETIME_MS, 0);
+      const bufferSizeBytes = getNumber(span, SPAN_KEYS.STREAM_BUFFER_SIZE_BYTES, 0);
+
+      activities.push({
+        id: spanId,
+        type: ACTIVITY_TYPES.STREAM_LIFETIME_EXCEEDED,
+        description: `Stream lifetime exceeded (${Math.round(maxLifetimeMs / 1000)}s limit)`,
+        timestamp: span.timestamp,
+        parentSpanId: spanIdToParentSpanId.get(spanId) || undefined,
+        status: ACTIVITY_STATUS.ERROR,
+        result: cleanupReason,
+        streamCleanupReason: cleanupReason,
+        streamMaxLifetimeMs: maxLifetimeMs,
+        streamBufferSizeBytes: bufferSizeBytes,
+      });
+    }
+
+    for (const span of durableToolExecutionSpans) {
+      const spanId = getString(span, SPAN_KEYS.SPAN_ID, '');
+      const hasError = getField(span, SPAN_KEYS.HAS_ERROR) === true;
+      const toolName = getString(span, SPAN_KEYS.TOOL_NAME, '');
+      const toolCallId = getString(span, SPAN_KEYS.TOOL_CALL_ID, '');
+      const subAgentId = getString(span, SPAN_KEYS.SUB_AGENT_ID, ACTIVITY_NAMES.UNKNOWN_AGENT);
+      const toolResponseContent = getString(span, SPAN_KEYS.TOOL_RESPONSE_CONTENT, '');
+
+      activities.push({
+        id: spanId,
+        type: ACTIVITY_TYPES.DURABLE_TOOL_EXECUTION,
+        description: hasError
+          ? `Durable tool execution failed: ${toolName}`
+          : `Durable tool executed: ${toolName}`,
+        timestamp: span.timestamp,
+        parentSpanId: spanIdToParentSpanId.get(spanId) || undefined,
+        status: hasError ? ACTIVITY_STATUS.ERROR : ACTIVITY_STATUS.SUCCESS,
+        subAgentId,
+        toolName: toolName || undefined,
+        toolCallId: toolCallId || undefined,
+        toolResponseContent: toolResponseContent || undefined,
+      });
+    }
+
+    // Pre-parse all timestamps once for better performance
+    const allSpanTimes = durationSpans.map((s) => new Date(s.timestamp).getTime());
+    const operationStartTime = allSpanTimes.length > 0 ? Math.min(...allSpanTimes) : null;
+    const operationEndTime = allSpanTimes.length > 0 ? Math.max(...allSpanTimes) : null;
+
+    // Resolve parentSpanId to nearest ancestor activity
+    const activityIds = new Set(activities.map((a) => a.id));
+    const ancestorCache = new Map<string, string | undefined>();
+    function findAncestorActivity(spanId: string, depth = 0): string | undefined {
+      if (!spanId || depth > 200) return undefined;
+      if (activityIds.has(spanId)) return spanId;
+      if (ancestorCache.has(spanId)) return ancestorCache.get(spanId);
+      const parentSpanId = spanIdToParentSpanId.get(spanId);
+      if (!parentSpanId) {
+        ancestorCache.set(spanId, undefined);
+        return undefined;
+      }
+      const result = findAncestorActivity(parentSpanId, depth + 1);
+      ancestorCache.set(spanId, result);
+      return result;
+    }
+    for (const activity of activities) {
+      if (activity.parentSpanId) {
+        activity.parentSpanId = findAncestorActivity(activity.parentSpanId) || undefined;
+      }
+    }
+
+    const activityById = new Map(activities.map((a) => [a.id, a]));
+    const agentGenCache = new Map<string, string | null>();
+    function findAncestorAgentGeneration(activityId: string, depth = 0): string | null {
+      if (depth > 200) return null;
+      if (agentGenCache.has(activityId)) return agentGenCache.get(activityId) ?? null;
+      const activity = activityById.get(activityId);
+      if (!activity) {
+        agentGenCache.set(activityId, null);
+        return null;
+      }
+      if (activity.type === ACTIVITY_TYPES.AGENT_GENERATION) {
+        agentGenCache.set(activityId, activity.id);
+        return activity.id;
+      }
+      if (!activity.parentSpanId) {
+        agentGenCache.set(activityId, null);
+        return null;
+      }
+      const result = findAncestorAgentGeneration(activity.parentSpanId, depth + 1);
+      agentGenCache.set(activityId, result);
+      return result;
+    }
+
+    // Group tool calls by their ancestor agent generation
+    const toolCallsByAgentGen = new Map<string, Activity[]>();
+    for (const activity of activities) {
+      if (activity.type === ACTIVITY_TYPES.TOOL_CALL) {
+        const ancestorAgentGen = findAncestorAgentGeneration(activity.id);
+        if (ancestorAgentGen) {
+          if (!toolCallsByAgentGen.has(ancestorAgentGen)) {
+            toolCallsByAgentGen.set(ancestorAgentGen, []);
+          }
+          toolCallsByAgentGen.get(ancestorAgentGen)?.push(activity);
+        }
+      }
+    }
+
+    // For each agent generation, check if ALL tool calls to the same MCP server failed
+    for (const [_agentGenId, toolCallsInGeneration] of toolCallsByAgentGen) {
+      if (toolCallsInGeneration.length === 0) continue;
+
+      // Group tool calls by MCP server name
+      const toolCallsByMcpServer = new Map<string, Activity[]>();
+      for (const toolCall of toolCallsInGeneration) {
+        // Skip tool calls without an MCP server name
+        if (!toolCall.mcpServerName) continue;
+
+        if (!toolCallsByMcpServer.has(toolCall.mcpServerName)) {
+          toolCallsByMcpServer.set(toolCall.mcpServerName, []);
+        }
+        toolCallsByMcpServer.get(toolCall.mcpServerName)?.push(toolCall);
+      }
+
+      // For each MCP server, check if ALL or SOME tool calls failed
+      for (const [_mcpServerName, toolCallsToServer] of toolCallsByMcpServer) {
+        const failedToolCalls = toolCallsToServer.filter((a) => a.status === ACTIVITY_STATUS.ERROR);
+        const successfulToolCalls = toolCallsToServer.filter(
+          (a) => a.status === ACTIVITY_STATUS.SUCCESS
+        );
+
+        if (failedToolCalls.length > 0 && successfulToolCalls.length > 0) {
+          for (const toolCall of failedToolCalls) {
+            toolCall.status = ACTIVITY_STATUS.WARNING;
+          }
+        }
+      }
+    }
+
+    // Sort activities by pre-parsed timestamps
+    activities.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+    // Conversation duration: user-facing timeline (first user message to last AI response)
+    const firstUser = activities.find((a) => a.type === ACTIVITY_TYPES.USER_MESSAGE);
+    const lastAssistant = activities.findLast(
+      (a) =>
+        a.type === ACTIVITY_TYPES.AI_ASSISTANT_MESSAGE ||
+        a.type === ACTIVITY_TYPES.AI_GENERATION ||
+        a.type === ACTIVITY_TYPES.AI_MODEL_STREAMED_TEXT
+    );
+    const conversationStartTime = firstUser
+      ? new Date(firstUser.timestamp).getTime()
+      : operationStartTime;
+    const conversationEndTime = lastAssistant
+      ? new Date(lastAssistant.timestamp).getTime()
+      : operationEndTime;
+    const conversationDurationMs =
+      conversationStartTime && conversationEndTime
+        ? Math.max(0, conversationEndTime - conversationStartTime)
+        : 0;
+
+    const TOKEN_ACTIVITY_TYPES: Set<string> = new Set([
+      ACTIVITY_TYPES.AI_GENERATION,
+      ACTIVITY_TYPES.AI_MODEL_STREAMED_TEXT,
+    ]);
+    const { totalInputTokens, totalOutputTokens } = activities.reduce(
+      (acc, a) => {
+        if (TOKEN_ACTIVITY_TYPES.has(a.type)) {
+          if (typeof a.inputTokens === 'number') acc.totalInputTokens += a.inputTokens;
+          if (typeof a.outputTokens === 'number') acc.totalOutputTokens += a.outputTokens;
+        }
+        return acc;
+      },
+      { totalInputTokens: 0, totalOutputTokens: 0 }
+    );
+
+    const openAICallsCount = aiGenerationSpans.length;
+
+    let finalErrorCount = 0;
+    let finalWarningCount = 0;
+    let totalMessages = 0;
+    let totalToolCalls = 0;
+    for (const a of activities) {
+      if (a.status === ACTIVITY_STATUS.ERROR) finalErrorCount++;
+      if (a.status === ACTIVITY_STATUS.WARNING) finalWarningCount++;
+      if (a.type === ACTIVITY_TYPES.USER_MESSAGE || a.type === ACTIVITY_TYPES.AI_ASSISTANT_MESSAGE)
+        totalMessages++;
+      if (a.type === ACTIVITY_TYPES.TOOL_CALL) totalToolCalls++;
+    }
+
+    // Time-to-first-token: interaction-grained values (in seconds) recorded on the
+    // interaction HTTP server span — the only span carrying these attributes. It is
+    // in allRows (it has conversation.id) but is not surfaced as an activity, so it
+    // is located by TTFT-attribute presence rather than by span name.
+    //
+    // SigNoz/ClickHouse returns 0 (not null) for a numeric attribute a span does not
+    // have, so a `!= null` presence check matches EVERY span and reads 0 off the wrong
+    // one. A real first-token time is always > 0, so treat only a positive value as
+    // present — this both selects the right span and yields "absent" (→ "—") when a
+    // metric is genuinely omitted (e.g. the no-text turn where visible-token is omitted).
+    const readTtftFrom = (row: SigNozListItem, key: string): number | null =>
+      parseTtftSeconds(getField(row, key));
+    const ttftSpanRow = allRows.find(
+      (row) =>
+        readTtftFrom(row, SPAN_KEYS.TTFT_VISIBLE_TOKEN) != null ||
+        readTtftFrom(row, SPAN_KEYS.TTFT_MODEL_TOKEN) != null ||
+        readTtftFrom(row, SPAN_KEYS.TTFT_VISIBLE_PART) != null
+    );
+    const readTtft = (key: string): number | null =>
+      ttftSpanRow ? readTtftFrom(ttftSpanRow, key) : null;
+
+    const conversation = {
+      conversationId,
+      startTime: conversationStartTime ? conversationStartTime : null,
+      endTime: conversationEndTime ? conversationEndTime : null,
+      duration: conversationDurationMs,
+      totalMessages,
+      totalToolCalls,
+      totalErrors: finalErrorCount,
+      totalOpenAICalls: openAICallsCount,
+      ttftModelTokenSeconds: readTtft(SPAN_KEYS.TTFT_MODEL_TOKEN),
+      ttftVisibleTokenSeconds: readTtft(SPAN_KEYS.TTFT_VISIBLE_TOKEN),
+      ttftVisiblePartSeconds: readTtft(SPAN_KEYS.TTFT_VISIBLE_PART),
+    };
+
+    const tDone = Date.now();
+    logger.info(
+      {
+        conversationId,
+        processingMs: tDone - tSignoz,
+        totalMs: tDone - t0,
+      },
+      'conversation detail complete'
+    );
+
+    return NextResponse.json({
+      ...conversation,
+      activities,
+      conversationStartTime: conversationStartTime ? conversationStartTime : null,
+      conversationEndTime: conversationEndTime ? conversationEndTime : null,
+      conversationDuration: conversationDurationMs,
+      totalInputTokens,
+      totalOutputTokens,
+      mcpToolErrors: [],
+      agentId,
+      agentName,
+      spansWithErrorsCount: spansWithErrorsList.length,
+      errorCount: finalErrorCount,
+      warningCount: finalWarningCount,
+      usageEvents,
+      // Trigger-specific info (null if not a trigger invocation)
+      invocationType,
+      invocationEntryPoint,
+      triggerId,
+      triggerInvocationId,
+      triggerRunAsUserId,
+    });
+  } catch (error) {
+    const logger = getLogger('conversation-details');
+    const errorMessage =
+      error instanceof Error ? error.message : 'Failed to fetch conversation details';
+    const err = error as {
+      message?: string;
+      name?: string;
+      stack?: string;
+      code?: unknown;
+      cause?: { code?: string; message?: string };
+    };
+    logger.error(
+      {
+        error,
+        errorName: err?.name,
+        errorMessage: err?.message,
+        errorStack: err?.stack,
+        errorCode: err?.code,
+        causeCode: err?.cause?.code,
+        causeMessage: err?.cause?.message,
+      },
+      'Error fetching conversation details'
+    );
+
+    if (errorMessage.includes('SIGNOZ_API_KEY is not configured')) {
+      return NextResponse.json({ error: errorMessage }, { status: 501 });
+    }
+    if (errorMessage.includes('SigNoz service unavailable')) {
+      return NextResponse.json({ error: errorMessage }, { status: 503 });
+    }
+    if (errorMessage.includes('SigNoz authentication failed')) {
+      return NextResponse.json({ error: errorMessage }, { status: 502 });
+    }
+    if (errorMessage.includes('Invalid SigNoz query')) {
+      return NextResponse.json({ error: errorMessage }, { status: 400 });
+    }
+    if (errorMessage.includes('SigNoz rate limit exceeded')) {
+      return NextResponse.json({ error: errorMessage }, { status: 429 });
+    }
+    if (errorMessage.includes('SigNoz server error')) {
+      return NextResponse.json({ error: errorMessage }, { status: 502 });
+    }
+    return NextResponse.json({ error: errorMessage }, { status: 500 });
+  }
+}

@@ -1,0 +1,56 @@
+'use client';
+
+import {
+  ItemCardContent,
+  ItemCardDescription,
+  ItemCardFooter,
+  ItemCardHeader,
+  ItemCardLink,
+  ItemCardRoot,
+  ItemCardTitle,
+} from '@/components/ui/item-card';
+import type { Project } from '@/lib/types/project';
+import { formatDate } from '@/lib/utils/format-date';
+import type { ProjectFormData } from './form/validation';
+import { ProjectItemMenu } from './project-item-menu';
+
+interface ProjectItemProps extends Project {
+  tenantId: string;
+  projectId: string;
+}
+
+export function ProjectItem({
+  id,
+  projectId,
+  name,
+  description,
+  models,
+  stopWhen,
+  createdAt,
+  tenantId,
+}: ProjectItemProps) {
+  const linkPath = `/${tenantId}/projects/${id}`;
+
+  return (
+    <ItemCardRoot>
+      <ItemCardHeader>
+        <ItemCardLink href={linkPath}>
+          <ItemCardTitle className="text-sm">{name}</ItemCardTitle>
+        </ItemCardLink>
+        <ProjectItemMenu
+          projectName={name}
+          projectData={{ id: projectId, name, description, models, stopWhen } as ProjectFormData}
+          tenantId={tenantId}
+        />
+      </ItemCardHeader>
+      <ItemCardLink href={linkPath} className="group">
+        <ItemCardContent>
+          <ItemCardDescription hasContent={!!description}>
+            {description || 'No description'}
+          </ItemCardDescription>
+          <ItemCardFooter footerText={`Created ${formatDate(createdAt)}`} />
+        </ItemCardContent>
+      </ItemCardLink>
+    </ItemCardRoot>
+  );
+}

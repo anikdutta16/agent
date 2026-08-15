@@ -1,0 +1,477 @@
+import { loadEnvironmentFiles } from '@agent-fabric/agents-core';
+import { z } from '@hono/zod-openapi';
+
+// Load all environment files using shared logic
+loadEnvironmentFiles();
+
+const envSchema = z
+  .object({
+    // Core Environment
+    NODE_ENV: z
+      .enum(['development', 'production', 'test'])
+      .default('development')
+      .describe('Node.js environment mode'),
+    ENVIRONMENT: z
+      .enum(['development', 'production', 'pentest', 'test'])
+      .default('development')
+      .describe('Application environment mode'),
+    LOG_LEVEL: z
+      .enum(['trace', 'debug', 'info', 'warn', 'error'])
+      .default('info')
+      .describe('Logging verbosity level'),
+
+    // Database
+    AGENT_FABRIC_AGENTS_MANAGE_DATABASE_URL: z
+      .string()
+      .describe(
+        'PostgreSQL connection URL for the management database (Doltgres with Git version control)'
+      ),
+    AGENT_FABRIC_AGENTS_RUN_DATABASE_URL: z
+      .string()
+      .describe(
+        'PostgreSQL connection URL for the runtime database (Doltgres with Git version control)'
+      ),
+    AGENT_FABRIC_AGENTS_MANAGE_UI_URL: z
+      .string()
+      .optional()
+      .describe('URL where the management UI is hosted'),
+    AGENT_FABRIC_AGENTS_API_URL: z
+      .string()
+      .optional()
+      .default('http://localhost:3002')
+      .describe('URL where the agents management API is running'),
+    AUTH_COOKIE_DOMAIN: z
+      .string()
+      .optional()
+      .describe(
+        'Explicit cookie domain for cross-subdomain auth (e.g., .localhost). Required when the API and UI do not share a common 3-part parent domain.'
+      ),
+
+    // Authentication
+    BETTER_AUTH_SECRET: z
+      .string()
+      .optional()
+      .describe('Secret key for Better Auth session encryption (change in production)'),
+    AGENT_FABRIC_AGENTS_MANAGE_UI_USERNAME: z
+      .string()
+      .optional()
+      .refine((val) => !val || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val), {
+        message: 'Invalid email address',
+      })
+      .describe('Admin email address for management UI login'),
+    AGENT_FABRIC_AGENTS_MANAGE_UI_PASSWORD: z
+      .string()
+      .optional()
+      .describe(
+        'Admin password for management UI login (policy enforced server-side via auth hook + init script)'
+      ),
+
+    // OAuth 2.1 Support Copilot
+    COPILOT_OAUTH_CLIENT_ID: z
+      .string()
+      .optional()
+      .describe(
+        'OAuth 2.1 client ID for the Support Copilot app (created by pnpm setup-oauth-client)'
+      ),
+
+    // Credential Gateway (confidential client for server-to-server token exchange)
+    COPILOT_GATEWAY_CLIENT_ID: z
+      .string()
+      .optional()
+      .describe(
+        'Credential gateway client ID for token exchange (created by pnpm setup-gateway-client)'
+      ),
+    COPILOT_GATEWAY_CLIENT_SECRET: z
+      .string()
+      .optional()
+      .describe(
+        'Credential gateway client secret for token exchange (created by pnpm setup-gateway-client)'
+      ),
+
+    // API Bypass Secrets (for local development and testing, skips auth)
+    AGENT_FABRIC_AGENTS_API_BYPASS_SECRET: z
+      .string()
+      .optional()
+      .describe('API bypass secret for local development and testing (skips auth)'),
+    AGENT_FABRIC_AGENTS_MANAGE_API_BYPASS_SECRET: z
+      .string()
+      .optional()
+      .describe('Management API bypass secret for local development and testing (skips auth)'),
+    AGENT_FABRIC_AGENTS_RUN_API_BYPASS_SECRET: z
+      .string()
+      .optional()
+      .describe('Run API bypass secret for local development and testing (skips auth)'),
+    AGENT_FABRIC_AGENTS_EVAL_API_BYPASS_SECRET: z
+      .string()
+      .optional()
+      .describe('Eval API bypass secret for local development and testing (skips auth)'),
+
+    // Copilot / Improvement Agent JWT (shared app credential)
+    AGENT_FABRIC_COPILOT_JWT_PRIVATE_KEY: z
+      .string()
+      .optional()
+      .describe(
+        'Base64-encoded RSA private key for signing copilot/improvement JWTs. Shared by manage-ui and agents-api.'
+      ),
+    AGENT_FABRIC_COPILOT_JWT_KID: z
+      .string()
+      .optional()
+      .describe('Key ID for the copilot/improvement JWT signing key'),
+    PUBLIC_AGENT_FABRIC_COPILOT_APP_ID: z
+      .string()
+      .optional()
+      .describe('App ID for the copilot/improvement agent app credential'),
+
+    // Vercel Cron
+    CRON_SECRET: z
+      .string()
+      .optional()
+      .describe('Secret used by Vercel Cron to authenticate cron job requests'),
+
+    // Anonymous Session JWT
+    AGENT_FABRIC_ANON_JWT_SECRET: z
+      .string()
+      .min(32, 'AGENT_FABRIC_ANON_JWT_SECRET must be at least 32 characters')
+      .optional()
+      .describe(
+        'Secret key for signing anonymous session JWTs (HS256). Required in production. Min 32 characters.'
+      ),
+    AGENT_FABRIC_ANON_SESSION_LIFETIME_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(60)
+      .max(2592000)
+      .optional()
+      .default(2592000)
+      .describe(
+        'Lifetime in seconds for anonymous session JWTs. Min 60s, max 2592000s (30 days). Default 2592000s (30 days).'
+      ),
+
+    // Captcha (Google reCAPTCHA v3) — cloud-only login surface
+    AGENT_FABRIC_RECAPTCHA_SECRET_KEY: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'Server-side secret for Google reCAPTCHA v3 verification. Cloud-only; presence enables captcha plugin on Better Auth login endpoints (/sign-up/email, /sign-in/email, /request-password-reset).'
+      ),
+    AGENT_FABRIC_RECAPTCHA_MIN_SCORE: z.coerce
+      .number()
+      .min(0)
+      .max(1)
+      .optional()
+      .default(0.5)
+      .describe(
+        'Minimum reCAPTCHA v3 score (0.0–1.0) required to pass verification. Default 0.5; tune based on observed false-positive rate.'
+      ),
+
+    // ALTCHA Sentinel (hosted bot protection)
+    AGENT_FABRIC_SENTINEL_API_KEY_ID: z
+      .string()
+      .optional()
+      .describe(
+        'ALTCHA Sentinel Restricted-tier API key ID. Presence enables Sentinel bot protection for widget-based auth flows. Sentinel verification fails open when the upstream is unreachable. Requires an upstream proxy that sets x-real-ip; client-supplied x-forwarded-for is intentionally ignored.'
+      ),
+    AGENT_FABRIC_SENTINEL_API_KEY_SECRET: z
+      .string()
+      .min(32)
+      .optional()
+      .describe(
+        'ALTCHA Sentinel Restricted-tier API key secret. Required for /v1/verify/signature authentication when AGENT_FABRIC_SENTINEL_API_KEY_ID is set.'
+      ),
+    AGENT_FABRIC_SENTINEL_BASE_URL: z
+      .string()
+      .url()
+      .refine((url) => url.startsWith('https://'), {
+        message:
+          'AGENT_FABRIC_SENTINEL_BASE_URL must use HTTPS — credentials are sent as query params',
+      })
+      .optional()
+      .describe(
+        'ALTCHA Sentinel base URL (e.g. https://localhost). Required when AGENT_FABRIC_SENTINEL_API_KEY_ID is set. Must be HTTPS.'
+      ),
+
+    // ALTCHA Sentinel — legacy PoW v1 (backward compatibility for embedded widgets that predate
+    // the pow→sentinel rename). Backed by a separate Sentinel Security Group configured for PoW v1
+    // (no HIS): challenges are proxied via GET /run/auth/pow/challenge and solutions are verified
+    // locally with the v1 secret as the HMAC key. Shares AGENT_FABRIC_SENTINEL_BASE_URL.
+    AGENT_FABRIC_SENTINEL_V1_API_KEY_ID: z
+      .string()
+      .optional()
+      .describe(
+        'ALTCHA Sentinel Restricted-tier API key ID for the PoW v1 (classic, no-HIS) Security Group. Presence enables the legacy GET /run/auth/pow/challenge compatibility endpoint for older embedded widgets. Uses AGENT_FABRIC_SENTINEL_BASE_URL.'
+      ),
+    AGENT_FABRIC_SENTINEL_V1_API_KEY_SECRET: z
+      .string()
+      .min(32)
+      .optional()
+      .describe(
+        'ALTCHA Sentinel Restricted-tier API key secret for the PoW v1 Security Group. Used as the HMAC key to verify classic proof-of-work solutions locally (altcha-lib). Required when AGENT_FABRIC_SENTINEL_V1_API_KEY_ID is set.'
+      ),
+
+    // JWT Keys (for Playground)
+    AGENT_FABRIC_AGENTS_TEMP_JWT_PUBLIC_KEY: z
+      .string()
+      .optional()
+      .describe(
+        'Temporary JWT public key for Playground (generate with scripts/generate-jwt-keys.sh)'
+      ),
+    AGENT_FABRIC_AGENTS_TEMP_JWT_PRIVATE_KEY: z
+      .string()
+      .optional()
+      .describe(
+        'Temporary JWT private key for Playground (generate with scripts/generate-jwt-keys.sh)'
+      ),
+    AGENT_FABRIC_PLAYGROUND_APP_ID: z
+      .string()
+      .optional()
+      .default('app_playground')
+      .describe('App ID for the global playground app record (created by db:auth:init)'),
+
+    // Nango (OAuth integrations)
+    NANGO_SERVER_URL: z
+      .string()
+      .optional()
+      .default('https://api.nango.dev')
+      .describe('Nango server URL for OAuth integrations'),
+    NANGO_SECRET_KEY: z.string().optional().describe('Nango secret key for OAuth integrations'),
+
+    // OpenTelemetry Configuration
+    OTEL_BSP_SCHEDULE_DELAY: z.coerce
+      .number()
+      .optional()
+      .default(500)
+      .describe('OpenTelemetry batch span processor schedule delay in milliseconds'),
+    OTEL_BSP_MAX_EXPORT_BATCH_SIZE: z.coerce
+      .number()
+      .optional()
+      .default(64)
+      .describe('OpenTelemetry batch span processor max export batch size'),
+
+    // Sentry (Error Monitoring)
+    SENTRY_DSN: z
+      .string()
+      .optional()
+      .describe('Sentry DSN for error monitoring (optional, no-ops when not set)'),
+
+    // Tenant Configuration
+    TENANT_ID: z
+      .string()
+      .optional()
+      .default('default')
+      .describe('Default tenant ID for development'),
+
+    // SigNoz (Observability)
+    SIGNOZ_URL: z.string().optional().describe('SigNoz server URL for observability'),
+    SIGNOZ_API_KEY: z.string().optional().describe('SigNoz API key for authentication'),
+    PUBLIC_SIGNOZ_URL: z
+      .string()
+      .optional()
+      .describe('Public SigNoz URL accessible from the browser'),
+
+    // AI Providers
+    ANTHROPIC_API_KEY: z
+      .string()
+      .describe(
+        'Anthropic API key for Claude models (required for agent execution). Get from https://console.anthropic.com/'
+      ),
+    OPENAI_API_KEY: z
+      .string()
+      .optional()
+      .describe('OpenAI API key for GPT models. Get from https://platform.openai.com/'),
+    GOOGLE_GENERATIVE_AI_API_KEY: z
+      .string()
+      .optional()
+      .describe('Google Generative AI API key for Gemini models'),
+
+    // Prompt Caching
+    AGENT_FABRIC_PROMPT_CACHING_ENABLED: z
+      .stringbool()
+      .optional()
+      .default(true)
+      .describe(
+        "Deployment-level kill switch for Agent Fabric-attached Anthropic prompt caching at the main agent generation call sites. Default 'true' (caching enabled). Set to 'false' to disable Agent Fabric-attached caching globally — useful for A/B testing or self-host opt-out. Customer-provided providerOptions still pass through to the model SDK unchanged when disabled."
+      ),
+
+    // GitHub App Configuration
+    GITHUB_APP_ID: z.string().optional().describe('GitHub App ID for GitHub integration'),
+    GITHUB_APP_PRIVATE_KEY: z
+      .string()
+      .optional()
+      .describe('GitHub App private key for authentication'),
+    GITHUB_WEBHOOK_SECRET: z
+      .string()
+      .optional()
+      .describe('Secret for validating GitHub webhook payloads'),
+    GITHUB_STATE_SIGNING_SECRET: z
+      .string()
+      .min(32, 'GITHUB_STATE_SIGNING_SECRET must be at least 32 characters')
+      .optional()
+      .describe('Secret for signing GitHub OAuth state (minimum 32 characters)'),
+    GITHUB_APP_NAME: z.string().optional().describe('Name of the GitHub App'),
+    GITHUB_MCP_API_KEY: z.string().optional().describe('API key for the GitHub MCP'),
+    SLACK_MCP_API_KEY: z.string().optional().describe('API key for the Slack MCP'),
+
+    // Slack Socket Mode (local development)
+    SLACK_APP_TOKEN: z
+      .string()
+      .optional()
+      .describe('Slack App-Level Token for Socket Mode (xapp-*)'),
+
+    // Workflow Configuration
+    WORKFLOW_TARGET_WORLD: z.string().optional().describe('Target world for workflow execution'),
+    WORKFLOW_POSTGRES_URL: z
+      .string()
+      .optional()
+      .describe('PostgreSQL connection URL for workflow job queue'),
+    WORKFLOW_POSTGRES_JOB_PREFIX: z
+      .string()
+      .optional()
+      .describe('Prefix for workflow job names in the queue'),
+    WORKFLOW_POSTGRES_WORKER_CONCURRENCY: z
+      .string()
+      .optional()
+      .describe('Number of concurrent workflow workers'),
+
+    // Blob Storage (local filesystem fallback, or inferred S3/Vercel)
+    BLOB_STORAGE_LOCAL_PATH: z
+      .string()
+      .optional()
+      .default('.blob-storage')
+      .describe(
+        'Directory path for local blob storage fallback. Resolved relative to process cwd. Default .blob-storage.'
+      ),
+    BLOB_READ_WRITE_TOKEN: z
+      .string()
+      .optional()
+      .describe(
+        'Vercel Blob read-write token. Used when S3 is not configured and this token is set.'
+      ),
+    BLOB_STORAGE_S3_ENDPOINT: z
+      .string()
+      .optional()
+      .describe('S3-compatible endpoint URL (omit for AWS S3, which uses the default endpoint)'),
+    BLOB_STORAGE_S3_BUCKET: z
+      .string()
+      .optional()
+      .describe('S3 bucket name for storing uploaded media'),
+    BLOB_STORAGE_S3_REGION: z.string().optional().describe('AWS region for the S3 bucket'),
+    BLOB_STORAGE_S3_ACCESS_KEY_ID: z
+      .string()
+      .optional()
+      .describe('AWS access key ID for S3 (required when S3 storage is inferred).'),
+    BLOB_STORAGE_S3_SECRET_ACCESS_KEY: z
+      .string()
+      .optional()
+      .describe('AWS secret access key for S3 (required when S3 storage is inferred).'),
+    BLOB_STORAGE_S3_FORCE_PATH_STYLE: z
+      .string()
+      .optional()
+      .default('false')
+      .transform((val) => val === 'true')
+      .describe(
+        'Force path-style S3 URLs: false for AWS S3 (default), true for path-style/self-hosted S3-compatible.'
+      ),
+    BLOB_STORAGE_PRESIGNED_URL_EXPIRY_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(60)
+      .max(604800)
+      .optional()
+      .default(7200)
+      .describe(
+        'Expiry in seconds for S3 presigned media URLs. Must be between 60 and 604800 (7 days). Default 7200 (2 hours).'
+      ),
+  })
+  .superRefine((data, ctx) => {
+    const hasS3Bucket =
+      data.BLOB_STORAGE_S3_BUCKET !== undefined &&
+      String(data.BLOB_STORAGE_S3_BUCKET).trim() !== '';
+
+    if (hasS3Bucket) {
+      const required = [
+        { key: 'BLOB_STORAGE_S3_BUCKET', val: data.BLOB_STORAGE_S3_BUCKET },
+        { key: 'BLOB_STORAGE_S3_REGION', val: data.BLOB_STORAGE_S3_REGION },
+        { key: 'BLOB_STORAGE_S3_ACCESS_KEY_ID', val: data.BLOB_STORAGE_S3_ACCESS_KEY_ID },
+        { key: 'BLOB_STORAGE_S3_SECRET_ACCESS_KEY', val: data.BLOB_STORAGE_S3_SECRET_ACCESS_KEY },
+      ] as const;
+      for (const { key, val } of required) {
+        if (val === undefined || String(val).trim() === '') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key],
+            message: `When S3 storage is inferred from BLOB_STORAGE_S3_BUCKET, ${key} must be set and non-empty.`,
+          });
+        }
+      }
+    }
+
+    if (
+      data.BLOB_STORAGE_LOCAL_PATH === undefined ||
+      String(data.BLOB_STORAGE_LOCAL_PATH).trim() === ''
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BLOB_STORAGE_LOCAL_PATH'],
+        message: 'BLOB_STORAGE_LOCAL_PATH must be set and non-empty. Default is .blob-storage.',
+      });
+    }
+
+    const sentinelVars = [
+      data.AGENT_FABRIC_SENTINEL_API_KEY_ID,
+      data.AGENT_FABRIC_SENTINEL_API_KEY_SECRET,
+      data.AGENT_FABRIC_SENTINEL_BASE_URL,
+    ];
+    const sentinelSet = sentinelVars.filter(Boolean);
+    if (sentinelSet.length > 0 && sentinelSet.length < 3) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'AGENT_FABRIC_SENTINEL_API_KEY_ID, AGENT_FABRIC_SENTINEL_API_KEY_SECRET, and AGENT_FABRIC_SENTINEL_BASE_URL must all be set together or all be unset',
+      });
+    }
+
+    const sentinelV1Set = [
+      data.AGENT_FABRIC_SENTINEL_V1_API_KEY_ID,
+      data.AGENT_FABRIC_SENTINEL_V1_API_KEY_SECRET,
+    ].filter(Boolean);
+    if (sentinelV1Set.length === 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'AGENT_FABRIC_SENTINEL_V1_API_KEY_ID and AGENT_FABRIC_SENTINEL_V1_API_KEY_SECRET must both be set together or both be unset',
+      });
+    }
+    if (sentinelV1Set.length === 2 && !data.AGENT_FABRIC_SENTINEL_BASE_URL) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'AGENT_FABRIC_SENTINEL_BASE_URL is required when AGENT_FABRIC_SENTINEL_V1_API_KEY_ID/SECRET are set (the PoW v1 challenge proxy uses it)',
+      });
+    }
+  });
+
+const logEnvIssues = (scope: string, error: z.ZodError) => {
+  for (const issue of error.issues) {
+    const key = issue.path.length > 0 ? issue.path.join('.') : '<root>';
+    console.error(`[${scope}] ${key}: ${issue.message}`);
+  }
+};
+
+const parseEnv = () => {
+  try {
+    return envSchema.parse(process.env);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      logEnvIssues('agents-api env', error);
+      const missingVars = error.issues.map((issue) => issue.path.join('.'));
+      throw new Error(
+        `❌ Invalid environment variables: ${missingVars.join(', ')}\n${error.message}`
+      );
+    }
+    throw error;
+  }
+};
+
+export const env = parseEnv();
+export type Env = z.infer<typeof envSchema>;

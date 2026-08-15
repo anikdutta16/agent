@@ -1,0 +1,159 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "ui": "tui",
+  "concurrency": "15",
+  "globalEnv": [
+    "NODE_ENV",
+    "CI",
+    "TURBO_TOKEN",
+    "TURBO_TEAM",
+    "TURBO_TELEMETRY_DISABLED",
+    "ENVIRONMENT",
+    "AGENT_FABRIC_AGENTS_MANAGE_DATABASE_URL",
+    "AGENT_FABRIC_AGENTS_RUN_DATABASE_URL",
+    "AGENT_FABRIC_AGENTS_API_URL",
+    "PUBLIC_AGENT_FABRIC_AGENTS_API_URL",
+    "NEXT_PUBLIC_AGENT_FABRIC_AGENTS_API_URL",
+    "AGENT_FABRIC_AGENTS_MANAGE_UI_URL",
+    "PORT",
+    "AGENTS_API_PORT",
+    "MANAGE_UI_PORT",
+    "LOG_LEVEL",
+    "SPICEDB_ENDPOINT",
+    "SPICEDB_PRESHARED_KEY",
+    "SPICEDB_TLS_ENABLED",
+    "SMTP_HOST",
+    "SMTP_PORT"
+  ],
+  "globalDependencies": ["pnpm-lock.yaml"],
+  "tasks": {
+    "transit": {
+      "dependsOn": ["^transit"]
+    },
+    "sync:licenses": {
+      "cache": false,
+      "inputs": ["LICENSE.md", "SUPPLEMENTAL_TERMS.md", "scripts/sync-licenses.mjs"],
+      "outputs": [
+        "packages/*/LICENSE.md",
+        "packages/*/SUPPLEMENTAL_TERMS.md",
+        "agents-*/LICENSE.md",
+        "agents-*/SUPPLEMENTAL_TERMS.md"
+      ]
+    },
+    "build": {
+      "dependsOn": ["^build", "sync:licenses"],
+      "inputs": ["$TURBO_DEFAULT$", ".env.example"],
+      "outputs": ["dist/**", "build/**", ".next/**", "!.next/cache/**", "!.next/dev/**"]
+    },
+    "dev": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "persistent": true
+    },
+    "prepack": {
+      "cache": false,
+      "persistent": true
+    },
+    "start": {
+      "dependsOn": ["build"],
+      "cache": false
+    },
+    "@agent-fabric/agents-mcp#build": {
+      "dependsOn": ["^build", "sync:licenses"],
+      "inputs": ["$TURBO_DEFAULT$", ".env.example"],
+      "outputs": ["esm/**", "bin/**", ".tsbuildinfo"]
+    },
+    "lint": {
+      "inputs": ["$TURBO_DEFAULT$"],
+      "outputs": []
+    },
+    "lint:fix": {
+      "inputs": ["$TURBO_DEFAULT$"],
+      "outputs": [],
+      "cache": false
+    },
+    "knip": {},
+    "typecheck": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$"],
+      "outputs": []
+    },
+    "typecheck:watch": {
+      "cache": false,
+      "persistent": true
+    },
+    "db:generate": {
+      "dependsOn": ["db:manage:generate", "db:run:generate"],
+      "cache": false
+    },
+    "db:migrate": {
+      "dependsOn": ["db:manage:migrate", "db:run:migrate"],
+      "cache": false
+    },
+    "db:studio": {
+      "cache": false,
+      "persistent": true
+    },
+    "db:clean": {
+      "cache": false
+    },
+    "db:check": {
+      "dependsOn": ["db:manage:check", "db:run:check"],
+      "cache": false
+    },
+    "db:manage:generate": {
+      "cache": false,
+      "inputs": ["drizzle.manage.config.ts", "src/db/manage/manage-schema.ts"],
+      "outputs": ["drizzle/manage/**"]
+    },
+    "db:manage:migrate": {
+      "cache": false,
+      "inputs": ["drizzle/manage/**", "src/db/manage/manage-schema.ts"]
+    },
+    "db:manage:drop": {
+      "cache": false
+    },
+    "db:manage:studio": {
+      "cache": false,
+      "persistent": true
+    },
+    "db:manage:check": {
+      "cache": false,
+      "inputs": ["drizzle.manage.config.ts", "src/db/manage/manage-schema.ts"]
+    },
+    "db:run:generate": {
+      "cache": false,
+      "inputs": ["drizzle.run.config.ts", "src/db/runtime/runtime-schema.ts"],
+      "outputs": ["drizzle/runtime/**"]
+    },
+    "db:run:migrate": {
+      "cache": false,
+      "inputs": ["drizzle/runtime/**", "src/db/runtime/runtime-schema.ts"]
+    },
+    "db:run:drop": {
+      "cache": false
+    },
+    "db:run:studio": {
+      "cache": false,
+      "persistent": true
+    },
+    "db:run:check": {
+      "cache": false,
+      "inputs": ["drizzle.run.config.ts", "src/db/runtime/runtime-schema.ts"]
+    },
+    "check": {
+      "dependsOn": ["lint", "typecheck"],
+      "cache": false
+    },
+    "check:husky": {
+      "dependsOn": ["build", "lint", "typecheck"],
+      "cache": false,
+      "outputs": []
+    },
+    "check:prepush": {
+      "dependsOn": ["lint", "typecheck"],
+      "cache": false,
+      "outputs": []
+    }
+  }
+}

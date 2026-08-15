@@ -1,0 +1,131 @@
+{
+  "name": "@agent-fabric/agents-api",
+  "version": "0.80.6",
+  "description": "Unified Agent Fabric API - combines management, runtime, and evaluation capabilities",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./manage": {
+      "types": "./dist/domains/manage/index.d.ts",
+      "import": "./dist/domains/manage/index.js"
+    },
+    "./run": {
+      "types": "./dist/domains/run/index.d.ts",
+      "import": "./dist/domains/run/index.js"
+    },
+    "./evals": {
+      "types": "./dist/domains/evals/index.d.ts",
+      "import": "./dist/domains/evals/index.js"
+    },
+    "./instrumentation": {
+      "types": "./dist/instrumentation.d.ts",
+      "import": "./dist/instrumentation.js"
+    },
+    "./factory": {
+      "types": "./dist/factory.d.ts",
+      "import": "./dist/factory.js"
+    }
+  },
+  "type": "module",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "scripts": {
+    "knip": "knip --directory .. --workspace agents-api --config agents-api/knip.config.ts --dependencies --files",
+    "workflow:build": "tsx scripts/build-workflow.ts",
+    "well-known:copy": "tsx scripts/copy-well-known.ts",
+    "dev": "pnpm workflow:build && vite",
+    "build": "pnpm workflow:build && tsdown && pnpm well-known:copy",
+    "start": "node dist/index.js",
+    "test": "vitest --run --config vitest.config.ts",
+    "test:integration": "vitest --run --config vitest.integration.config.ts",
+    "test:watch": "vitest",
+    "test:coverage": "vitest --run --coverage",
+    "openapi:update-snapshot": "vitest --run src/__tests__/openapi.test.ts -u",
+    "typecheck": "tsc --noEmit",
+    "typecheck:watch": "tsc --noEmit --watch",
+    "lint": "biome lint --error-on-warnings",
+    "lint:fix": "biome check --write"
+  },
+  "dependencies": {
+    "@ai-sdk/google": "3.0.4",
+    "@aws-sdk/client-s3": "^3.985.0",
+    "@aws-sdk/s3-request-presigner": "3.995.0",
+    "@better-auth/oauth-provider": "catalog:",
+    "@hono/mcp": "^0.1.5",
+    "@hono/swagger-ui": "^0.5.1",
+    "@hono/zod-openapi": "^1.1.5",
+    "@agent-fabric/agents-core": "workspace:^",
+    "@agent-fabric/agents-email": "workspace:^",
+    "@agent-fabric/agents-mcp": "workspace:^",
+    "@agent-fabric/agents-work-apps": "workspace:^",
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@opentelemetry/api": "catalog:",
+    "@opentelemetry/auto-instrumentations-node": "catalog:",
+    "@opentelemetry/baggage-span-processor": "catalog:",
+    "@opentelemetry/context-async-hooks": "catalog:",
+    "@opentelemetry/core": "catalog:",
+    "@opentelemetry/exporter-trace-otlp-http": "catalog:",
+    "@opentelemetry/resources": "catalog:",
+    "@opentelemetry/sdk-node": "catalog:",
+    "@opentelemetry/sdk-trace-base": "catalog:",
+    "@opentelemetry/semantic-conventions": "catalog:",
+    "@smithy/node-http-handler": "^4.4.0",
+    "@vercel/blob": "^2.3.0",
+    "@vercel/functions": "^3.5.1",
+    "@vercel/queue": "^0.1.6",
+    "@vercel/sandbox": "^0.0.24",
+    "@workflow/builders": "^4.1.1",
+    "@workflow/world-local": "^4.2.1",
+    "@workflow/world-postgres": "^4.3.0",
+    "@workflow/world-vercel": "^4.5.0",
+    "ai": "6.0.191",
+    "ajv": "^8.18.0",
+    "cron-parser": "^5.5.0",
+    "drizzle-orm": "^0.44.4",
+    "fetch-to-node": "^2.1.0",
+    "hono": "^4.12.7",
+    "hono-pino": "^0.10.1",
+    "jmespath": "^0.16.0",
+    "jose": "^6.1.0",
+    "llm-info": "^1.0.69",
+    "pg": "^8.16.3",
+    "workflow": "4.6.0"
+  },
+  "peerDependencies": {
+    "@hono/zod-openapi": "^1.1.5",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@hono/vite-dev-server": "^0.20.1",
+    "@types/jmespath": "^0.15.2",
+    "@types/node": "^20.11.24",
+    "@types/pg": "^8.15.6",
+    "@vitest/coverage-v8": "^3.2.4",
+    "tsx": "^4.7.1",
+    "typescript": "^6.0.2",
+    "vite": "^7.3.2",
+    "vite-tsconfig-paths": "^5.1.4",
+    "vitest": "^3.2.4"
+  },
+  "optionalDependencies": {
+    "@sentry/node": "^9.22.0"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE.md",
+    "SUPPLEMENTAL_TERMS.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agent-fabric/agents.git",
+    "directory": "agents-api"
+  }
+}

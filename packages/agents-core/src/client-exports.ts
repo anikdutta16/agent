@@ -1,0 +1,82 @@
+/**
+ * Client-Safe Schema Exports
+ *
+ * This file exports only the Zod schemas and types that are safe to use
+ * in client-side applications (like Next.js builds) without importing
+ * server-side database dependencies.
+ */
+
+import type { z } from '@hono/zod-openapi';
+import { MAX_ID_LENGTH } from './validation';
+import type {
+  AgentApiInsertSchema,
+  ApiKeyApiCreationResponseSchema,
+  ApiKeyApiSelectSchema,
+  AppApiCreationResponseSchema,
+  AppApiSelectSchema,
+  CredentialReferenceApiInsertSchema,
+  FullAgentAgentInsertSchema,
+  ScheduledTriggerApiInsertSchema,
+  ScheduledTriggerApiSelectSchema,
+  ScheduledTriggerApiUpdateSchema,
+  ScheduledTriggerInvocationApiSelectSchema,
+  ScheduledTriggerWithRunInfoSchema,
+  TriggerApiSelectSchema,
+  TriggerInvocationApiSelectSchema,
+} from './validation/schemas';
+
+export {
+  DEFAULT_COMPOSIO_STORE_ID,
+  DEFAULT_NANGO_STORE_ID,
+} from './credential-stores/default-constants';
+export * from './validation/schemas';
+export * from './validation/schemas/shared';
+export * from './validation/schemas/skills';
+
+export type AgentApiInsert = z.infer<typeof AgentApiInsertSchema>;
+export type TriggerApiSelect = z.infer<typeof TriggerApiSelectSchema>;
+export type TriggerInvocationApiSelect = z.infer<typeof TriggerInvocationApiSelectSchema>;
+export type ScheduledTriggerApiInsert = z.infer<typeof ScheduledTriggerApiInsertSchema>;
+export type ScheduledTriggerApiSelect = z.infer<typeof ScheduledTriggerApiSelectSchema>;
+export type ScheduledTriggerApiUpdate = z.infer<typeof ScheduledTriggerApiUpdateSchema>;
+export type ScheduledTriggerInvocationApiSelect = z.infer<
+  typeof ScheduledTriggerInvocationApiSelectSchema
+>;
+export type ScheduledTriggerWithRunInfo = z.infer<typeof ScheduledTriggerWithRunInfoSchema>;
+export type ApiKeyApiSelect = z.infer<typeof ApiKeyApiSelectSchema>;
+export type ApiKeyApiCreationResponse = z.infer<typeof ApiKeyApiCreationResponseSchema>;
+export type AppApiSelect = z.infer<typeof AppApiSelectSchema>;
+export type AppApiCreationResponse = z.infer<typeof AppApiCreationResponseSchema>;
+export type CredentialReferenceApiInsert = z.infer<typeof CredentialReferenceApiInsertSchema>;
+export type InternalAgentDefinition = z.infer<typeof FullAgentAgentInsertSchema>;
+
+export function generateIdFromName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-zA-Z0-9]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, MAX_ID_LENGTH);
+}
+export { type OrgRole, OrgRoles, type ProjectRole, ProjectRoles } from './auth/authz/types';
+export {
+  DEFAULT_MEMBERSHIP_LIMIT,
+  QUOTA_RESOURCE_TYPES,
+  SEAT_RESOURCE_TYPES,
+} from './auth/entitlement-constants';
+export {
+  SUPPORT_COPILOT_PLATFORM_SLUGS,
+  SUPPORT_COPILOT_PLATFORMS,
+  type SupportCopilotPageMatcher,
+  type SupportCopilotPlatformEntry,
+  type SupportCopilotPlatformSlug,
+} from './auth/support-copilot-platforms';
+export * from './constants/context-breakdown';
+export { GATEWAY_ROUTABLE_PROVIDERS_SET } from './constants/models';
+export * from './constants/otel-attributes';
+export * from './constants/signoz-queries';
+export { CredentialStoreType, MCPTransportType } from './types';
+export { detectAuthenticationRequired } from './utils/auth-detection';
+export * from './utils/cache-state';
+export * from './utils/skill-files';
+export * from './validation/extend-schemas';

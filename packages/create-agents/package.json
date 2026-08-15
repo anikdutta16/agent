@@ -1,0 +1,75 @@
+{
+  "name": "@agent-fabric/create-agents",
+  "version": "0.80.6",
+  "description": "Create an Agent Fabric project",
+  "type": "module",
+  "bin": {
+    "create-agents": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE.md",
+    "SUPPLEMENTAL_TERMS.md"
+  ],
+  "scripts": {
+    "knip": "knip --directory ../.. --workspace packages/create-agents --dependencies",
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "lint": "biome lint --error-on-warnings",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "test": "vitest --run src/__tests__ --exclude src/__tests__/e2e/** --passWithNoTests",
+    "test:watch": "vitest src/__tests__ --exclude src/__tests__/e2e/**",
+    "test:unit": "vitest --run src/__tests__ --exclude src/__tests__/e2e/**",
+    "test:e2e": "turbo run build --filter=@agent-fabric/create-agents --filter=@agent-fabric/agents-api --filter=@agent-fabric/agents-cli --filter=@agent-fabric/agents-manage-ui && vitest --run src/__tests__/e2e",
+    "test:e2e:watch": "turbo run build --filter=@agent-fabric/create-agents --filter=@agent-fabric/agents-api --filter=@agent-fabric/agents-cli --filter=@agent-fabric/agents-manage-ui && vitest src/__tests__/e2e",
+    "test:all": "vitest --run --passWithNoTests",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "agent-fabric",
+    "agents",
+    "ai",
+    "framework",
+    "boilerplate",
+    "typescript",
+    "project",
+    "starter",
+    "cli",
+    "create",
+    "init"
+  ],
+  "author": "Agent Fabric <support@agent-fabric.local>",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "dependencies": {
+    "@clack/prompts": "^0.11.0",
+    "@agent-fabric/agents-core": "workspace:*",
+    "commander": "^12.0.0",
+    "degit": "^2.8.4",
+    "fs-extra": "^11.0.0",
+    "picocolors": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/degit": "^2.8.6",
+    "@types/fs-extra": "^11.0.0",
+    "@types/node": "^20.12.0",
+    "execa": "^9.6.0",
+    "playwright": "^1.58.2",
+    "tsx": "^4.7.0",
+    "typescript": "^6.0.2",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agent-fabric/agents.git",
+    "directory": "packages/create-agents"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

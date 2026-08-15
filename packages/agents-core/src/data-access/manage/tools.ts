@@ -1,0 +1,842 @@
+import type { WithTimestamps } from '@agent-fabric/agents-core/validation/extend-schemas';
+import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
+import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
+import { and, count, desc, eq } from 'drizzle-orm';
+import type { CredentialStoreRegistry } from '../../credential-stores';
+import type { NangoCredentialData } from '../../credential-stores/nango-store';
+import { CredentialStuffer } from '../../credential-stuffer';
+import type { AgentsManageDatabaseClient } from '../../db/manage/manage-client';
+import { subAgentToolRelations, tools } from '../../db/manage/manage-schema';
+import { createAgentsRunDatabaseClient } from '../../db/runtime/runtime-client';
+import { getActiveBranch } from '../../dolt/schema-sync';
+import { env } from '../../env';
+import { isSerializationError } from '../../retry/retryable-errors';
+import type { CredentialReferenceSelect } from '../../types/index';
+import {
+  type AgentScopeConfig,
+  CredentialStoreType,
+  MCPServerType,
+  type MCPToolConfig,
+  MCPTransportType,
+  type McpTool,
+  type McpToolDefinition,
+  type PaginationConfig,
+  type ProjectScopeConfig,
+  type ToolInsert,
+  type ToolSelect,
+  type ToolUpdate,
+} from '../../types/index';
+import {
+  configureComposioMCPServer,
+  detectAuthenticationRequired,
+  getCredentialStoreLookupKeyFromRetrievalParams,
+  isThirdPartyMCPServerAuthenticated,
+  isTrustedWorkAppMcpUrl,
+  TRUSTED_WORK_APP_MCP_PATHS,
+  toISODateString,
+} from '../../utils';
+import { deriveRelationId } from '../../utils/conversations';
+import { unwrapJsonSchemaWrapper } from '../../utils/json-schema-walk';
+import { getLogger } from '../../utils/logger';
+import { McpClient, type McpServerConfig } from '../../utils/mcp-client';
+import { convertZodToJsonSchema } from '../../utils/schema-conversion';
+import { cascadeDeleteByTool } from '../runtime/cascade-delete';
+import { isGithubWorkAppTool } from '../runtime/github-work-app-installations';
+import { isSlackWorkAppTool } from '../runtime/slack-work-app-mcp';
+import { getCredentialReference, getUserScopedCredentialReference } from './credentialReferences';
+import { agentScopedWhere, projectScopedWhere } from './scope-helpers';
+import { updateAgentToolRelation } from './subAgentRelations';
+
+/**
+ * Check if an error is a timeout/connection error (transient, not auth-related).
+ * Uses MCP SDK ErrorCode for proper type safety.
+ */
+function isTimeoutOrConnectionError(error: unknown): boolean {
+  if (error instanceof McpError) {
+    return (
+      error.code === ErrorCode.RequestTimeout ||
+      error.code === ErrorCode.ConnectionClosed ||
+      error.code === ErrorCode.InternalError
+    );
+  }
+
+  if (error instanceof StreamableHTTPError) {
+    return error.code !== undefined && error.code >= 500;
+  }
+
+  if (error instanceof Error) {
+    const message = error.message.toLowerCase();
+    const cause = (error as any).cause;
+
+    if (
+      message.includes('timed out') ||
+      message.includes('timeout') ||
+      message.includes('fetch failed')
+    ) {
+      return true;
+    }
+
+    const transientCodes = [
+      'ETIMEDOUT',
+      'ECONNABORTED',
+      'ECONNRESET',
+      'ECONNREFUSED',
+      'ENOTFOUND',
+      'EHOSTUNREACH',
+      'ENETUNREACH',
+      'EPIPE',
+    ];
+    if (cause?.code && transientCodes.includes(cause.code)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Check if an error indicates the credential is invalid/expired/revoked.
+ * These errors mean the user genuinely needs to re-authenticate.
+ */
+function isAuthenticationError(error: unknown): boolean {
+  if (error instanceof UnauthorizedError) {
+    return true;
+  }
+
+  if (error instanceof StreamableHTTPError) {
+    return error.code === 401 || error.code === 403;
+  }
+
+  if (error instanceof Error) {
+    const message = error.message.toLowerCase();
+    if (
+      message.includes('unauthorized') ||
+      message.includes('forbidden') ||
+      message.includes('invalid_token') ||
+      message.includes('token expired') ||
+      message.includes('invalid_grant')
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+const logger = getLogger('tools');
+
+/**
+ * Extract expiration date from credential data stored in credential store
+ */
+async function getCredentialExpiresAt(
+  credentialReference: CredentialReferenceSelect,
+  credentialStoreRegistry?: CredentialStoreRegistry
+): Promise<string | undefined> {
+  if (!credentialReference.retrievalParams) return undefined;
+
+  const credentialStore = credentialStoreRegistry?.get(credentialReference.credentialStoreId);
+  if (!credentialStore || credentialStore.type === CredentialStoreType.memory) return undefined;
+
+  const lookupKey = getCredentialStoreLookupKeyFromRetrievalParams({
+    retrievalParams: credentialReference.retrievalParams,
+    credentialStoreType: credentialStore.type,
+  });
+  if (!lookupKey) return undefined;
+
+  const credentialDataString = await credentialStore.get(lookupKey);
+  if (!credentialDataString) return undefined;
+
+  if (credentialStore.type === CredentialStoreType.nango) {
+    const nangoCredentialData = JSON.parse(credentialDataString) as NangoCredentialData;
+    return nangoCredentialData.expiresAt
+      ? toISODateString(nangoCredentialData.expiresAt)
+      : undefined;
+  }
+
+  if (credentialStore.type === CredentialStoreType.keychain) {
+    const oauthTokens = JSON.parse(credentialDataString);
+    return oauthTokens.expires_at ? toISODateString(oauthTokens.expires_at) : undefined;
+  }
+
+  return undefined;
+}
+
+/**
+ * Extract input schema from MCP tool definition, handling multiple formats
+ * Different MCP servers may use different schema structures:
+ * - inputSchema (direct) - e.g., Notion MCP
+ * - parameters.properties - e.g., some other MCP servers
+ * - parameters (direct) - alternative format
+ * - schema - another possible location
+ */
+function extractInputSchema(toolDef: any, toolName?: string, _toolOverrides?: any): any {
+  // Always return original schema during discovery
+  // Tool overrides are applied during execution in Agent.ts, not during discovery
+  // This allows the UI to show both original and override schemas for comparison
+  return extractOriginalSchema(toolDef, toolName);
+}
+
+/**
+ * Normalize a tool's schema to plain JSON Schema for the manage UI. `McpClient.tools()`
+ * builds the schema as a Zod (via `z.fromJSONSchema`) or an AI SDK `jsonSchema()` wrapper;
+ * the UI needs JSON Schema so its shared walker can resolve $ref, unwrap nullables, expand
+ * union variants, and surface enums. Plain JSON Schema passes through unchanged.
+ */
+function toJsonSchemaForDisplay(raw: any, toolName?: string): any {
+  if (!raw || typeof raw !== 'object') return raw;
+  const unwrapped = unwrapJsonSchemaWrapper(raw);
+  if (unwrapped !== raw) return unwrapped;
+  if (typeof raw.safeParse === 'function' || typeof raw.parse === 'function') {
+    try {
+      return convertZodToJsonSchema(raw);
+    } catch (error) {
+      logger.warn(
+        { toolName, error: error instanceof Error ? error.message : String(error) },
+        'Failed to convert MCP tool schema to JSON Schema; tool will display no parameters'
+      );
+      return {};
+    }
+  }
+  return raw;
+}
+
+function extractOriginalSchema(toolDef: any, toolName?: string): any {
+  let raw: any;
+  if (toolDef.inputSchema) {
+    raw = toolDef.inputSchema;
+  } else if (toolDef.parameters?.properties) {
+    raw = toolDef.parameters.properties;
+  } else if (toolDef.parameters && typeof toolDef.parameters === 'object') {
+    raw = toolDef.parameters;
+  } else if (toolDef.schema) {
+    raw = toolDef.schema;
+  } else {
+    return {};
+  }
+
+  return toJsonSchemaForDisplay(raw, toolName);
+}
+
+const convertToMCPToolConfig = (tool: ToolSelect): MCPToolConfig => {
+  if (tool.config.type !== 'mcp') {
+    throw new Error(`Cannot convert non-MCP tool to MCP config: ${tool.id}`);
+  }
+
+  return {
+    id: tool.id,
+    name: tool.name,
+    description: tool.name, // Use name as description fallback
+    serverUrl: tool.config.mcp.server.url,
+    mcpType: tool.config.mcp.server.url.includes('api.nango.dev')
+      ? MCPServerType.nango
+      : MCPServerType.generic,
+    transport: tool.config.mcp.transport,
+    headers: tool.headers,
+    toolOverrides: tool.config.mcp.toolOverrides,
+  };
+};
+
+type DiscoveryResult = {
+  tools: McpToolDefinition[];
+  serverInstructions?: string;
+};
+
+const discoverToolsFromServer = async (
+  tool: ToolSelect,
+  credentialReference?: CredentialReferenceSelect,
+  credentialStoreRegistry?: CredentialStoreRegistry,
+  userId?: string
+): Promise<DiscoveryResult> => {
+  if (tool.config.type !== 'mcp') {
+    throw new Error(`Cannot discover tools from non-MCP tool: ${tool.id}`);
+  }
+
+  try {
+    let serverConfig: McpServerConfig;
+
+    if (credentialReference) {
+      const storeReference = {
+        credentialStoreId: credentialReference.credentialStoreId,
+        retrievalParams: credentialReference.retrievalParams || {},
+      };
+
+      if (!credentialStoreRegistry) {
+        throw new Error('CredentialStoreRegistry is required for authenticated tools');
+      }
+      const credentialStuffer = new CredentialStuffer(credentialStoreRegistry);
+      serverConfig = await credentialStuffer.buildMcpServerConfig(
+        { tenantId: tool.tenantId, projectId: tool.projectId },
+        convertToMCPToolConfig(tool),
+        storeReference
+      );
+    } else {
+      const transportType = tool.config.mcp.transport?.type || MCPTransportType.streamableHttp;
+      if (transportType === MCPTransportType.sse) {
+        serverConfig = {
+          type: MCPTransportType.sse,
+          url: tool.config.mcp.server.url,
+          eventSourceInit: tool.config.mcp.transport?.eventSourceInit,
+        };
+      } else {
+        serverConfig = {
+          type: MCPTransportType.streamableHttp,
+          url: tool.config.mcp.server.url,
+          requestInit: tool.config.mcp.transport?.requestInit,
+          eventSourceInit: tool.config.mcp.transport?.eventSourceInit,
+          reconnectionOptions: tool.config.mcp.transport?.reconnectionOptions,
+          sessionId: tool.config.mcp.transport?.sessionId,
+        };
+      }
+    }
+
+    const composioConnectedAccountId = credentialReference?.retrievalParams?.connectedAccountId as
+      | string
+      | undefined;
+
+    // Only inject Composio auth params when connectedAccountId is available (both or none)
+    // to prevent cross-project credential leakage via user_id-only scoping
+    if (composioConnectedAccountId) {
+      configureComposioMCPServer(
+        serverConfig,
+        tool.tenantId,
+        tool.projectId,
+        tool.credentialScope === 'user' ? 'user' : 'project',
+        userId,
+        composioConnectedAccountId
+      );
+    } else if (serverConfig.url?.toString().includes('composio.dev')) {
+      logger.warn(
+        { toolName: tool.name, toolId: tool.id },
+        'Composio tool missing connectedAccountId — skipping auth injection to prevent credential leakage'
+      );
+    }
+
+    const urlString = String(serverConfig.url);
+
+    if (
+      isGithubWorkAppTool(tool) &&
+      isTrustedWorkAppMcpUrl(
+        urlString,
+        TRUSTED_WORK_APP_MCP_PATHS.github,
+        env.AGENT_FABRIC_AGENTS_API_URL
+      )
+    ) {
+      serverConfig.headers = {
+        ...serverConfig.headers,
+        'x-agent-fabric-tool-id': tool.id,
+        'x-agent-fabric-tenant-id': tool.tenantId,
+        'x-agent-fabric-project-id': tool.projectId,
+        Authorization: `Bearer ${env.GITHUB_MCP_API_KEY}`,
+      };
+    }
+
+    if (
+      isSlackWorkAppTool(tool) &&
+      isTrustedWorkAppMcpUrl(
+        urlString,
+        TRUSTED_WORK_APP_MCP_PATHS.slack,
+        env.AGENT_FABRIC_AGENTS_API_URL
+      )
+    ) {
+      serverConfig.headers = {
+        ...serverConfig.headers,
+        'x-agent-fabric-tool-id': tool.id,
+        'x-agent-fabric-tenant-id': tool.tenantId,
+        'x-agent-fabric-project-id': tool.projectId,
+        Authorization: `Bearer ${env.SLACK_MCP_API_KEY}`,
+      };
+    }
+
+    const client = new McpClient({
+      name: tool.name,
+      server: serverConfig,
+    });
+
+    await client.connect();
+
+    const serverTools = await client.tools();
+    const serverInstructions = client.getInstructions() ?? undefined;
+
+    await client.disconnect();
+
+    const toolOverrides = tool.config.mcp.toolOverrides;
+
+    const toolDefinitions: McpToolDefinition[] = Object.entries(serverTools).map(
+      ([name, toolDef]) => {
+        const schema = extractInputSchema(toolDef as any, name, toolOverrides);
+        return {
+          name,
+          description: (toolDef as any).description || '',
+          inputSchema: schema,
+        };
+      }
+    );
+
+    return { tools: toolDefinitions, serverInstructions };
+  } catch (error) {
+    logger.error({ toolId: tool.id, error }, 'Tool discovery failed');
+    throw error;
+  }
+};
+
+/**
+ * Convert DB result to McpTool skeleton WITHOUT MCP discovery.
+ * This is a fast path that returns status='unknown' and empty availableTools.
+ * Use this for list views where you want instant page load.
+ */
+export const dbResultToMcpToolSkeleton = (
+  dbResult: ToolSelect,
+  relationshipId?: string
+): WithTimestamps<McpTool> => {
+  const { headers, capabilities, credentialReferenceId, imageUrl, createdAt, ...rest } = dbResult;
+
+  return {
+    ...rest,
+    status: 'unknown',
+    availableTools: [],
+    capabilities: capabilities || undefined,
+    credentialReferenceId: credentialReferenceId || undefined,
+    createdAt: toISODateString(createdAt),
+    updatedAt: toISODateString(dbResult.updatedAt),
+    lastError: dbResult.lastError || null,
+    headers: headers || undefined,
+    imageUrl: imageUrl || undefined,
+    relationshipId,
+  };
+};
+
+export const dbResultToMcpTool = async (
+  dbResult: ToolSelect,
+  dbClient: AgentsManageDatabaseClient,
+  credentialStoreRegistry?: CredentialStoreRegistry,
+  relationshipId?: string,
+  userId?: string
+): Promise<WithTimestamps<McpTool>> => {
+  const { headers, capabilities, credentialReferenceId, imageUrl, createdAt, ...rest } = dbResult;
+
+  if (dbResult.config.type !== 'mcp') {
+    return {
+      ...rest,
+      status: 'unknown',
+      availableTools: [],
+      capabilities: capabilities || undefined,
+      credentialReferenceId: credentialReferenceId || undefined,
+      createdAt: toISODateString(createdAt),
+      updatedAt: toISODateString(dbResult.updatedAt),
+      lastError: null,
+      headers: headers || undefined,
+      imageUrl: imageUrl || undefined,
+      relationshipId,
+    };
+  }
+
+  let availableTools: McpToolDefinition[] = [];
+  let status: McpTool['status'] = 'unknown';
+  let lastErrorComputed: string | null;
+  let expiresAt: string | undefined;
+  let createdBy: string | undefined;
+  let serverInstructions: string | undefined;
+
+  // Look up credential reference based on scope
+  const credentialReference =
+    credentialReferenceId && dbResult.credentialScope !== 'user'
+      ? await getCredentialReference(dbClient)({
+          scopes: { tenantId: dbResult.tenantId, projectId: dbResult.projectId },
+          id: credentialReferenceId,
+        })
+      : userId && dbResult.credentialScope === 'user'
+        ? await getUserScopedCredentialReference(dbClient)({
+            scopes: { tenantId: dbResult.tenantId, projectId: dbResult.projectId },
+            toolId: dbResult.id,
+            userId,
+          })
+        : undefined;
+
+  if (credentialReference) {
+    createdBy = credentialReference.createdBy || undefined;
+    expiresAt = await getCredentialExpiresAt(credentialReference, credentialStoreRegistry);
+  }
+
+  const mcpServerUrl = dbResult.config.mcp.server.url;
+
+  try {
+    const discoveryResult = await discoverToolsFromServer(
+      dbResult,
+      credentialReference,
+      credentialStoreRegistry,
+      userId
+    );
+    availableTools = discoveryResult.tools;
+    serverInstructions = discoveryResult.serverInstructions;
+    status = 'healthy';
+    lastErrorComputed = null;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Tool discovery failed';
+
+    if (isTimeoutOrConnectionError(error)) {
+      status = 'unavailable';
+      const errorCode = error instanceof McpError ? ` (MCP error ${error.code})` : '';
+      lastErrorComputed = `Connection failed - the MCP server may be slow or temporarily unreachable.${errorCode} ${errorMessage}`;
+    } else if (isAuthenticationError(error)) {
+      status = 'needs_auth';
+      lastErrorComputed = `Authentication required - OAuth login needed. ${errorMessage}`;
+    } else if (credentialReference) {
+      logger.warn(
+        {
+          toolId: dbResult.id,
+          credentialId: credentialReference.id,
+          errorCode: error instanceof McpError ? error.code : undefined,
+          errorMessage,
+        },
+        'MCP server discovery failed with existing credential — treating as transient'
+      );
+      status = 'unavailable';
+      lastErrorComputed = `Server temporarily unavailable. ${errorMessage}`;
+    } else {
+      const toolNeedsAuth = await detectAuthenticationRequired({
+        serverUrl: mcpServerUrl,
+        error: error instanceof Error ? error : undefined,
+        logger,
+      });
+
+      status = toolNeedsAuth ? 'needs_auth' : 'unhealthy';
+      lastErrorComputed = toolNeedsAuth
+        ? `Authentication required - OAuth login needed. ${errorMessage}`
+        : errorMessage;
+    }
+  }
+
+  // Check third-party service status
+  const isThirdPartyMCPServer = dbResult.config.mcp.server.url.includes('composio.dev');
+  if (isThirdPartyMCPServer) {
+    const hasConnectedAccountId = !!credentialReference?.retrievalParams?.connectedAccountId;
+
+    if (!hasConnectedAccountId) {
+      status = 'needs_auth';
+      lastErrorComputed =
+        'Third-party authentication required. Connect your account to pin a specific credential.';
+    } else {
+      const credentialScope = (dbResult.credentialScope as 'project' | 'user') || 'project';
+      const authResult = await isThirdPartyMCPServerAuthenticated(
+        dbResult.tenantId,
+        dbResult.projectId,
+        mcpServerUrl,
+        credentialScope,
+        userId
+      );
+
+      if (!authResult.authenticated && !authResult.error) {
+        status = 'needs_auth';
+        lastErrorComputed = 'Third-party authentication required. Try authenticating again.';
+      } else if (authResult.error) {
+        status = 'unavailable';
+        lastErrorComputed =
+          'Could not verify third-party authentication status. The service may be temporarily unavailable.';
+      }
+    }
+  }
+
+  const now = new Date().toISOString();
+
+  // Update tool metadata - wrap in try-catch to handle serialization conflicts gracefully.
+  // Concurrent Tool reads can cause serialization conflicts, so we need to handle them gracefully.
+  const updatedCapabilities = {
+    ...capabilities,
+    ...(serverInstructions !== undefined && { serverInstructions }),
+  };
+
+  try {
+    await updateTool(dbClient)({
+      scopes: { tenantId: dbResult.tenantId, projectId: dbResult.projectId },
+      toolId: dbResult.id,
+      data: {
+        updatedAt: now,
+        lastError: lastErrorComputed,
+        capabilities: updatedCapabilities,
+      },
+    });
+  } catch (updateError) {
+    if (isSerializationError(updateError)) {
+      logger.debug(
+        { toolId: dbResult.id },
+        'Skipping tool metadata update due to serialization conflict (concurrent request)'
+      );
+    } else {
+      // For other errors, log warning but don't fail the request
+      logger.warn(
+        { toolId: dbResult.id, error: updateError },
+        'Failed to update tool metadata - continuing with stale data'
+      );
+    }
+  }
+
+  return {
+    ...rest,
+    status,
+    availableTools,
+    capabilities: Object.keys(updatedCapabilities).length > 0 ? updatedCapabilities : undefined,
+    credentialReferenceId: credentialReferenceId || undefined,
+    createdAt: toISODateString(createdAt),
+    createdBy: createdBy || undefined,
+    updatedAt: toISODateString(now),
+    expiresAt,
+    lastError: lastErrorComputed,
+    headers: headers || undefined,
+    imageUrl: imageUrl || undefined,
+    relationshipId,
+  };
+};
+
+export const getToolById =
+  (db: AgentsManageDatabaseClient) =>
+  async (params: { scopes: ProjectScopeConfig; toolId: string }) => {
+    const result = await db.query.tools.findFirst({
+      where: and(projectScopedWhere(tools, params.scopes), eq(tools.id, params.toolId)),
+    });
+    return result ?? null;
+  };
+
+export const getMcpToolById =
+  (db: AgentsManageDatabaseClient) =>
+  async (params: {
+    scopes: ProjectScopeConfig;
+    toolId: string;
+    relationshipId?: string;
+    credentialStoreRegistry?: CredentialStoreRegistry;
+    userId?: string;
+  }): Promise<McpTool | null> => {
+    const tool = await getToolById(db)({ scopes: params.scopes, toolId: params.toolId });
+    if (!tool) {
+      return null;
+    }
+    return await dbResultToMcpTool(
+      tool,
+      db,
+      params.credentialStoreRegistry,
+      params.relationshipId,
+      params.userId
+    );
+  };
+
+export const listTools =
+  (db: AgentsManageDatabaseClient) =>
+  async (params: { scopes: ProjectScopeConfig; pagination?: PaginationConfig }) => {
+    const page = params.pagination?.page || 1;
+    const limit = Math.min(params.pagination?.limit || 10, 100);
+    const offset = (page - 1) * limit;
+
+    const whereClause = projectScopedWhere(tools, params.scopes);
+
+    const [toolsDbResults, totalResult] = await Promise.all([
+      db
+        .select()
+        .from(tools)
+        .where(whereClause)
+        .limit(limit)
+        .offset(offset)
+        .orderBy(desc(tools.createdAt)),
+      db.select({ count: count() }).from(tools).where(whereClause),
+    ]);
+
+    const total = totalResult[0]?.count || 0;
+    const pages = Math.ceil(total / limit);
+
+    return {
+      data: toolsDbResults,
+      pagination: { page, limit, total, pages },
+    };
+  };
+
+export const createTool = (db: AgentsManageDatabaseClient) => async (params: ToolInsert) => {
+  const now = new Date().toISOString();
+
+  const [created] = await db
+    .insert(tools)
+    .values({
+      ...params,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning();
+
+  return created;
+};
+
+export const updateTool =
+  (db: AgentsManageDatabaseClient) =>
+  async (params: {
+    scopes: ProjectScopeConfig;
+    toolId: string;
+    data: WithTimestamps<ToolUpdate>;
+  }) => {
+    const now = new Date().toISOString();
+
+    const [updated] = await db
+      .update(tools)
+      .set({
+        ...params.data,
+        updatedAt: now,
+      })
+      .where(and(projectScopedWhere(tools, params.scopes), eq(tools.id, params.toolId)))
+      .returning();
+
+    return updated ?? null;
+  };
+
+export const deleteTool =
+  (db: AgentsManageDatabaseClient) =>
+  async (params: { scopes: ProjectScopeConfig; toolId: string }) => {
+    const [deleted] = await db
+      .delete(tools)
+      .where(and(projectScopedWhere(tools, params.scopes), eq(tools.id, params.toolId)))
+      .returning();
+
+    if (!deleted) {
+      return false;
+    }
+
+    // If a github workapp tool is being deleted from the main branch, delete the runtime entities for the tool
+    // In the future, when we allow rolling back a project to a previous version, the user will need to reset the tool-repo permissions
+    const isWorkApp = deleted.isWorkApp;
+    const isGithub = isWorkApp && deleted.config.mcp.server.url.includes('/github/mcp');
+
+    if (isGithub || isSlackWorkAppTool(deleted)) {
+      try {
+        // getActiveBranch uses Dolt-specific SQL (active_branch()) which isn't available in pglite/postgres
+        const currentBranch = await getActiveBranch(db)();
+        if (currentBranch === `${params.scopes.tenantId}_${params.scopes.projectId}_main`) {
+          const runDbClient = createAgentsRunDatabaseClient();
+          await cascadeDeleteByTool(runDbClient)({
+            toolId: params.toolId,
+            tenantId: params.scopes.tenantId,
+            projectId: params.scopes.projectId,
+          });
+        }
+      } catch (error) {
+        // If we can't get the active branch (e.g., not using Dolt), skip the cascade delete
+        // This is expected in test environments using pglite
+        logger.debug(
+          { error, toolId: params.toolId },
+          'Skipping cascade delete - active_branch() not available'
+        );
+      }
+    }
+
+    return true;
+  };
+
+export const addToolToAgent =
+  (db: AgentsManageDatabaseClient) =>
+  async (params: {
+    scopes: AgentScopeConfig;
+    subAgentId: string;
+    toolId: string;
+    selectedTools?: string[] | null;
+    headers?: Record<string, string> | null;
+    toolPolicies?: Record<string, { needsApproval?: boolean }> | null;
+  }) => {
+    const id = deriveRelationId(
+      params.scopes.tenantId,
+      params.scopes.projectId,
+      params.scopes.agentId,
+      params.subAgentId,
+      params.toolId
+    );
+    const now = new Date().toISOString();
+
+    const [created] = await db
+      .insert(subAgentToolRelations)
+      .values({
+        id,
+        tenantId: params.scopes.tenantId,
+        projectId: params.scopes.projectId,
+        agentId: params.scopes.agentId,
+        subAgentId: params.subAgentId,
+        toolId: params.toolId,
+        selectedTools: params.selectedTools,
+        headers: params.headers,
+        toolPolicies: params.toolPolicies,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning();
+
+    return created;
+  };
+
+export const removeToolFromAgent =
+  (db: AgentsManageDatabaseClient) =>
+  async (params: { scopes: AgentScopeConfig; subAgentId: string; toolId: string }) => {
+    const [deleted] = await db
+      .delete(subAgentToolRelations)
+      .where(
+        and(
+          agentScopedWhere(subAgentToolRelations, params.scopes),
+          eq(subAgentToolRelations.subAgentId, params.subAgentId),
+          eq(subAgentToolRelations.toolId, params.toolId)
+        )
+      )
+      .returning();
+
+    return deleted;
+  };
+
+/**
+ * Upsert agent-tool relation (create if it doesn't exist, update if it does)
+ */
+export const upsertSubAgentToolRelation =
+  (db: AgentsManageDatabaseClient) =>
+  async (params: {
+    scopes: AgentScopeConfig;
+    subAgentId: string;
+    toolId: string;
+    selectedTools?: string[] | null;
+    headers?: Record<string, string> | null;
+    toolPolicies?: Record<string, { needsApproval?: boolean }> | null;
+    relationId?: string; // Optional: if provided, update specific relationship
+  }) => {
+    if (params.relationId) {
+      return await updateAgentToolRelation(db)({
+        scopes: params.scopes,
+        relationId: params.relationId,
+        data: {
+          subAgentId: params.subAgentId,
+          toolId: params.toolId,
+          selectedTools: params.selectedTools,
+          headers: params.headers,
+          toolPolicies: params.toolPolicies,
+        },
+      });
+    }
+
+    return await addToolToAgent(db)(params);
+  };
+
+/**
+ * Upsert a tool (create if it doesn't exist, update if it does)
+ */
+export const upsertTool =
+  (db: AgentsManageDatabaseClient) => async (params: { data: ToolInsert }) => {
+    const scopes = { tenantId: params.data.tenantId, projectId: params.data.projectId };
+
+    const existing = await getToolById(db)({
+      scopes,
+      toolId: params.data.id,
+    });
+
+    if (existing) {
+      return await updateTool(db)({
+        scopes,
+        toolId: params.data.id,
+        data: {
+          name: params.data.name,
+          config: params.data.config,
+          credentialReferenceId: params.data.credentialReferenceId,
+          imageUrl: params.data.imageUrl,
+          headers: params.data.headers,
+        },
+      });
+    }
+    return await createTool(db)(params.data);
+  };

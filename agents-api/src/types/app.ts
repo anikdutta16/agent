@@ -1,0 +1,81 @@
+import type {
+  AgentsManageDatabaseClient,
+  CredentialStoreRegistry,
+  ResolvedRef,
+  ServerConfig,
+} from '@agent-fabric/agents-core';
+import type { createAuth } from '@agent-fabric/agents-core/auth';
+
+type AuthInstance = ReturnType<typeof createAuth>;
+
+interface CommonSandboxConfig {
+  runtime: 'node22' | 'typescript';
+  timeout?: number;
+  vcpus?: number;
+}
+
+export interface NativeSandboxConfig extends CommonSandboxConfig {
+  provider: 'native';
+}
+
+export interface VercelSandboxConfig extends CommonSandboxConfig {
+  provider: 'vercel';
+  teamId: string;
+  projectId: string;
+  token: string;
+}
+
+export type SandboxConfig = NativeSandboxConfig | VercelSandboxConfig;
+
+type BaseAppVariables = {
+  requestId: string;
+  userId?: string;
+  userEmail?: string;
+  tenantId?: string;
+  tenantRole?: string;
+  projectId?: string;
+  /** OAuth client_id (`azp`) of the DCR'd client, when authenticated via an OAuth user JWT. */
+  oauthClientId?: string;
+};
+
+export type AppVariables = BaseAppVariables & {
+  serverConfig: ServerConfig;
+  credentialStores: CredentialStoreRegistry;
+  auth: AuthInstance;
+  user: AuthInstance['$Infer']['Session']['user'] | null;
+  session: AuthInstance['$Infer']['Session']['session'] | null;
+  sandboxConfig?: SandboxConfig;
+  requestBody?: unknown;
+};
+
+export type ManageAppVariables = AppVariables & {
+  db: AgentsManageDatabaseClient;
+  auth: AuthInstance;
+  resolvedRef: ResolvedRef;
+  /** Cached by projectFull middleware to avoid duplicate DB lookup for PUT upsert */
+  isProjectCreate?: boolean;
+};
+
+export type AppConfig = {
+  serverConfig: ServerConfig;
+  credentialStores: CredentialStoreRegistry;
+  auth: AuthInstance;
+  sandboxConfig?: SandboxConfig;
+};
+
+/**
+ * Minimal app variables for public/OAuth routes
+ * Does not include authentication variables
+ */
+export type PublicAppVariables = {
+  credentialStores: CredentialStoreRegistry;
+};
+
+/**
+ * Minimal app variables for OAuth routes with server config
+ */
+export type PublicAppVariablesWithServerConfig = {
+  db: AgentsManageDatabaseClient;
+  serverConfig: ServerConfig;
+  credentialStores: CredentialStoreRegistry;
+};

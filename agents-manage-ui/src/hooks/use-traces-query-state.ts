@@ -1,0 +1,119 @@
+import {
+  parseAsBoolean,
+  parseAsJson,
+  parseAsString,
+  parseAsStringLiteral,
+  useQueryStates,
+} from 'nuqs';
+
+// Define the time range options as a const assertion for type safety
+const timeRanges = ['24h', '7d', '15d', '30d', 'custom'] as const;
+export type TimeRange = (typeof timeRanges)[number];
+const originTypes = ['slack', 'trigger', 'scheduled_trigger'] as const;
+export type TraceOrigin = (typeof originTypes)[number];
+
+export const ORIGIN_LABELS: Record<TraceOrigin, string> = {
+  slack: 'Slack',
+  trigger: 'Webhook',
+  scheduled_trigger: 'Trigger',
+};
+
+// Type for span attributes
+export interface SpanAttribute {
+  key: string;
+  value: string;
+  operator?:
+    | '='
+    | '!='
+    | '<'
+    | '>'
+    | '<='
+    | '>='
+    | 'in'
+    | 'nin'
+    | 'contains'
+    | 'ncontains'
+    | 'regex'
+    | 'nregex'
+    | 'like'
+    | 'nlike'
+    | 'exists'
+    | 'nexists';
+}
+
+/**
+ * Hook for managing traces overview query state with nuqs
+ * Provides type-safe query parameter management for:
+ * - Time range selection (24h, 7d, 15d, 30d, custom)
+ * - Custom date range (start/end dates)
+ * - Span filtering (name and attributes)
+ * - Agent filtering (agentId)
+ */
+export function useTracesQueryState(defaultTimeRange: TimeRange = '30d') {
+  const [queryState, setQueryState] = useQueryStates({
+    // Time range selection with default
+    timeRange: parseAsStringLiteral(timeRanges).withDefault(defaultTimeRange),
+
+    // Custom date range - using descriptive names
+    customStartDate: parseAsString.withDefault(''),
+    customEndDate: parseAsString.withDefault(''),
+
+    // Agent filtering
+    agentId: parseAsString.withDefault(''),
+
+    origin: parseAsStringLiteral(originTypes),
+
+    // Error filtering
+    hasErrors: parseAsBoolean.withDefault(false),
+
+    // Span filtering
+    spanName: parseAsString.withDefault(''),
+    spanAttributes: parseAsJson((value): SpanAttribute[] => {
+      if (!Array.isArray(value)) return [];
+
+      return value.filter(
+        (item): item is SpanAttribute =>
+          typeof item === 'object' &&
+          item !== null &&
+          typeof (item as any).key === 'string' &&
+          typeof (item as any).value === 'string'
+      );
+    }).withDefault([]),
+  });
+
+  return {
+    // Current state
+    timeRange: queryState.timeRange,
+    customStartDate: queryState.customStartDate,
+    customEndDate: queryState.customEndDate,
+    agentId: queryState.agentId || undefined,
+    origin: queryState.origin ?? undefined,
+    hasErrors: queryState.hasErrors,
+    spanName: queryState.spanName,
+    spanAttributes: queryState.spanAttributes,
+
+    // State setters
+    setQueryState,
+
+    // Convenience methods
+    setTimeRange: (timeRange: TimeRange) => setQueryState({ timeRange }),
+    setCustomDateRange: (start: string, end: string) =>
+      setQueryState({ customStartDate: start, customEndDate: end }),
+    setAgentFilter: (agentId?: string) => setQueryState({ agentId: agentId ?? '' }),
+    setOriginFilter: (origin?: TraceOrigin) => setQueryState({ origin: origin ?? null }),
+    setHasErrorsFilter: (hasErrors: boolean) => setQueryState({ hasErrors }),
+    setSpanFilter: (name: string, attributes: SpanAttribute[] = []) =>
+      setQueryState({ spanName: name, spanAttributes: attributes }),
+    clearFilters: () =>
+      setQueryState({
+        agentId: '',
+        origin: null,
+        hasErrors: false,
+        spanName: '',
+        spanAttributes: [],
+        timeRange: defaultTimeRange,
+        customStartDate: '',
+        customEndDate: '',
+      }),
+  };
+}

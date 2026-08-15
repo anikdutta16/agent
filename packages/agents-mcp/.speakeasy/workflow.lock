@@ -1,0 +1,29 @@
+speakeasyVersion: 1.761.1
+sources:
+    Agent Fabric API:
+        sourceNamespace: agent-fabric-api
+        sourceRevisionDigest: sha256:f4092f16d9137622bb2f6c8f1f3357e4bdf254878adf47ac991ab9b421ba9488
+        sourceBlobDigest: sha256:b22b098f97a4d646cf6d8be2e2d458557807b57b7e9c1bad6da7ed423751cf50
+        tags:
+            - latest
+            - 1.0.0
+targets:
+    agent-fabric:
+        source: Agent Fabric API
+        sourceNamespace: agent-fabric-api
+        sourceRevisionDigest: sha256:f4092f16d9137622bb2f6c8f1f3357e4bdf254878adf47ac991ab9b421ba9488
+        sourceBlobDigest: sha256:b22b098f97a4d646cf6d8be2e2d458557807b57b7e9c1bad6da7ed423751cf50
+workflow:
+    workflowVersion: 1.0.0
+    speakeasyVersion: latest
+    sources:
+        Agent Fabric API:
+            inputs:
+                - location: https://api.localhost/openapi.json
+            output: .speakeasy/out.openapi.yaml
+            registry:
+                location: registry.speakeasyapi.dev/agent-fabric/agent-fabric/agent-fabric-api
+    targets:
+        agent-fabric:
+            target: mcp-typescript
+            source: Agent Fabric API

@@ -1,0 +1,885 @@
+import { performance } from 'node:perf_hooks';
+import {
+  APPROVAL_NEEDED_EVENT,
+  APPROVAL_RESOLVED_EVENT,
+  buildConversationMetadata,
+  type CredentialStoreRegistry,
+  commonGetErrorResponses,
+  createApiError,
+  createMessage,
+  createOrGetConversation,
+  errorSchemaFactory,
+  type FullExecutionContext,
+  generateId,
+  getActiveAgentForConversation,
+  getConversation,
+  getConversationId,
+  getWorkflowExecutionByConversation,
+  isUniqueConstraintError,
+  loggerFactory,
+  type Part,
+  PartSchema,
+  recordToolApprovalDecision,
+  setActiveAgentForConversation,
+  TOOL_APPROVAL_HOOK_PREFIX,
+} from '@agent-fabric/agents-core';
+import { FileSecurityError, PdfUrlIngestionError } from '@agent-fabric/agents-core/external-fetch';
+import { createProtectedRoute, inheritedRunApiKeyAuth } from '@agent-fabric/agents-core/middleware';
+import { OpenAPIHono, z } from '@hono/zod-openapi';
+import { context as otelContext, propagation, trace } from '@opentelemetry/api';
+import { createUIMessageStream, JsonToSseTransformStream } from 'ai';
+import { HTTPException } from 'hono/http-exception';
+import { stream } from 'hono/streaming';
+import { getRun, start } from 'workflow/api';
+import runDbClient from '../../../data/db/runDbClient';
+import { flushBatchProcessor } from '../../../instrumentation';
+import { getLogger } from '../../../logger';
+import { contextValidationMiddleware, handleContextResolution } from '../context';
+import { ExecutionHandler } from '../handlers/executionHandler';
+import { buildMessageAttachmentToolCallId } from '../services/blob-storage/attachment-artifacts';
+import {
+  buildPersistedMessageContent,
+  inlineExternalPdfUrlParts,
+} from '../services/blob-storage/file-upload-helpers';
+import {
+  emitConversationWebhook,
+  prefetchWebhookDestinations,
+} from '../services/WebhookDeliveryService';
+import { pendingToolApprovalManager } from '../session/PendingToolApprovalManager';
+import { toolApprovalUiBus } from '../session/ToolApprovalUiBus';
+import { streamBufferRegistry } from '../stream/stream-buffer-registry';
+import { createBufferingStreamHelper, createVercelStreamHelper } from '../stream/stream-helpers';
+import {
+  registerTtftRecorder,
+  TtftRecorder,
+  unregisterTtftRecorder,
+} from '../stream/ttft-recorder';
+import { MessageIdSchema, VercelMessageSchema } from '../types/chat';
+import { getUserIdFromContext } from '../types/executionContext';
+import { errorOp } from '../utils/agent-operations';
+import { extractTextFromParts, getMessagePartsFromVercelContent } from '../utils/message-parts';
+import {
+  isAutoMintIdentity,
+  parseAgentFabricJsonHeader,
+  stripIdentificationType,
+} from '../utils/user-properties';
+import { agentExecutionWorkflow, toolApprovalHook } from '../workflow/functions/agentExecution';
+
+type AppVariables = {
+  credentialStores: CredentialStoreRegistry;
+  requestBody?: any;
+  executionContext: FullExecutionContext;
+};
+
+const app = new OpenAPIHono<{ Variables: AppVariables }>();
+const logger = getLogger('chatDataStream');
+
+const chatDataStreamRoute = createProtectedRoute({
+  method: 'post',
+  path: '/chat',
+  tags: ['Chat'],
+  summary: 'Chat (Vercel Streaming Protocol)',
+  description: 'Chat completion endpoint streaming with Vercel data stream protocol.',
+  security: [{ bearerAuth: [] }],
+  permission: inheritedRunApiKeyAuth(),
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: z.object({
+            model: z.string().optional(),
+            messages: z.array(VercelMessageSchema),
+            id: z.string().optional(),
+            conversationId: z.string().optional(),
+            messageId: MessageIdSchema.optional().describe(
+              'Client-supplied user message id. Optional; server generates one if omitted. Persisted as messages.id so events keyed to this id can join back to the message row. Constrained to the server id alphabet ([A-Za-z0-9_-]).'
+            ),
+            stream: z.boolean().optional().describe('Whether to stream the response').default(true),
+            max_tokens: z.number().optional().describe('Maximum tokens to generate'),
+            headers: z
+              .record(z.string(), z.unknown())
+              .optional()
+              .describe('Headers data for template processing'),
+            runConfig: z.record(z.string(), z.unknown()).optional().describe('Run configuration'),
+            executionMode: z
+              .enum(['classic', 'durable'])
+              .optional()
+              .describe(
+                'Override the agent execution mode for this request. Takes precedence over the agent config default. Falls back to classic if unset.'
+              ),
+            userProperties: z
+              .record(z.string(), z.unknown())
+              .optional()
+              .describe('User properties to associate with the conversation'),
+            properties: z
+              .record(z.string(), z.unknown())
+              .optional()
+              .describe('Per-turn properties (page url, referrer, etc.) for the conversation'),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Streamed chat completion',
+      headers: z.object({
+        'Content-Type': z.string().default('text/plain; charset=utf-8'),
+        'x-vercel-ai-data-stream': z.string().default('v1'),
+      }),
+    },
+    ...commonGetErrorResponses,
+    409: errorSchemaFactory('conflict', 'Message with the supplied id already exists'),
+  },
+});
+// Apply context validation middleware
+app.use('/chat', contextValidationMiddleware);
+
+app.openapi(chatDataStreamRoute, async (c) => {
+  // TTFT clock start: monotonic timestamp + the interaction (HTTP server) span,
+  // both captured at true handler entry. Capturing the span here (rather than inside
+  // the streaming callback) guarantees we record onto the request-wrapping span even
+  // if the async streaming context does not propagate the active span.
+  const ttftT0 = performance.now();
+  const ttftSpan = trace.getActiveSpan();
+
+  try {
+    // Get execution context from API key authentication
+    const executionContext = c.get('executionContext');
+    const { tenantId, projectId, agentId } = executionContext;
+
+    loggerFactory
+      .getLogger('chatDataStream')
+      .debug({ tenantId, projectId, agentId }, 'Extracted chatDataStream parameters');
+
+    const body = c.req.valid('json');
+
+    const approvalParts = (body.messages || [])
+      .flatMap((m: any) => m?.parts || [])
+      .filter((p: any) => p?.state === 'approval-responded' && typeof p?.toolCallId === 'string');
+
+    const isApprovalResponse = approvalParts.length > 0;
+
+    // Fast-path: allow client to respond to tool approvals via the same /chat endpoint.
+    // This should NOT start a new agent execution. The original stream continues separately.
+    // Supports both single and batch approval responses in one request.
+    if (isApprovalResponse) {
+      const conversationId = body.conversationId;
+      if (!conversationId) {
+        return c.json(
+          {
+            success: false,
+            error: 'conversationId is required for approval response',
+          },
+          400
+        );
+      }
+
+      // Validate that the conversation exists and belongs to this tenant/project
+      const conversation = await getConversation(runDbClient)({
+        scopes: { tenantId, projectId },
+        conversationId,
+      });
+
+      if (!conversation) {
+        return c.json({ success: false, error: 'Conversation not found' }, 404);
+      }
+
+      // Check if there is a suspended durable execution for this conversation.
+      const durableExecution = await getWorkflowExecutionByConversation(runDbClient)({
+        tenantId,
+        projectId,
+        conversationId,
+      });
+
+      const isDurable = durableExecution?.status === 'suspended';
+
+      if (isDurable && durableExecution) {
+        await Promise.allSettled(
+          approvalParts.map(async (approvalPart: any) => {
+            const toolCallId = approvalPart.toolCallId as string;
+            const approved = !!approvalPart.approval?.approved;
+            const reason = approvalPart.approval?.reason as string | undefined;
+            const token = `${TOOL_APPROVAL_HOOK_PREFIX}${conversationId}:${durableExecution.id}:${toolCallId}`;
+            try {
+              await toolApprovalHook.resume(token, {
+                approved,
+                reason: approved ? undefined : reason,
+              });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              if (!message.includes('not found') && !message.includes('already')) {
+                throw error;
+              }
+            }
+          })
+        );
+
+        const namespace = (durableExecution.metadata as any)?.continuationStreamNamespace as
+          | string
+          | undefined;
+        const run = getRun(durableExecution.id);
+
+        c.header('Content-Type', 'text/event-stream');
+        c.header('Cache-Control', 'no-cache');
+        c.header('Connection', 'keep-alive');
+
+        return stream(c, async (s) => {
+          try {
+            const readable = run.getReadable({ namespace });
+            const reader = readable.getReader();
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              await s.write(value);
+            }
+          } catch (error) {
+            logger.error(
+              { error, executionId: durableExecution.id },
+              'Error streaming approval continuation'
+            );
+            await s.write(`event: error\ndata: ${JSON.stringify({ error: 'Stream error' })}\n\n`);
+          }
+        });
+      }
+
+      const settled = await Promise.allSettled(
+        approvalParts.map(async (approvalPart: any) => {
+          const toolCallId = approvalPart.toolCallId as string;
+          const approved = !!approvalPart.approval?.approved;
+          const reason = approvalPart.approval?.reason as string | undefined;
+
+          // Classic in-memory approval path: resolves instantly when this
+          // instance is the one running the suspended agent.
+          const ok = approved
+            ? pendingToolApprovalManager.approveToolCall(toolCallId)
+            : pendingToolApprovalManager.denyToolCall(toolCallId, reason);
+
+          if (ok) {
+            return { toolCallId, approved, alreadyProcessed: false, deferred: false };
+          }
+
+          // No in-memory entry here: the agent is running on a different
+          // instance (or hasn't suspended yet). Persist the decision so the
+          // waiting instance can poll and consume it. Without this the approval
+          // is lost and the agent waits out its 10-minute timeout.
+          await recordToolApprovalDecision(runDbClient)({
+            tenantId,
+            projectId,
+            conversationId,
+            toolCallId,
+            approved,
+            reason,
+          });
+
+          logger.info(
+            { toolCallId, approved, conversationId },
+            'Tool approval not held on this instance; deferred to shared store for cross-instance delivery'
+          );
+
+          return { toolCallId, approved, alreadyProcessed: false, deferred: true };
+        })
+      );
+
+      // One failed DB write must not drop the rest of the batch. Report
+      // per-toolCallId status so the client can tell which approvals landed;
+      // in-memory approvals from earlier items have already resumed their agents.
+      const results = settled.map((outcome, i) => {
+        if (outcome.status === 'fulfilled') {
+          return outcome.value;
+        }
+        const part = approvalParts[i] as any;
+        const toolCallId = part.toolCallId as string;
+        logger.error(
+          { toolCallId, error: outcome.reason },
+          'Failed to record tool approval decision in shared store'
+        );
+        return {
+          toolCallId,
+          approved: !!part.approval?.approved,
+          alreadyProcessed: false,
+          deferred: false,
+          error: 'failed_to_record',
+        };
+      });
+
+      return c.json({ success: results.every((r) => !('error' in r)), results });
+    }
+
+    // Extract target context headers (for copilot/chat-to-edit scenarios)
+    const targetTenantId = c.req.header('x-target-tenant-id');
+    const targetProjectId = c.req.header('x-target-project-id');
+    const targetAgentId = c.req.header('x-target-agent-id');
+
+    // Extract headers to forward to MCP servers (for user session auth)
+    // Transform cookie -> x-forwarded-cookie since downstream services expect it
+    // Note: Do NOT forward the authorization header - it causes issues with internal A2A requests
+    // because the user's JWT token is not valid for those internal service-to-service calls
+    const forwardedHeaders: Record<string, string> = {};
+    const xForwardedCookie = c.req.header('x-forwarded-cookie');
+    const cookie = c.req.header('cookie');
+    const clientTimezone = c.req.header('x-agent-fabric-client-timezone');
+    const clientTimestamp = c.req.header('x-agent-fabric-client-timestamp');
+
+    // Priority: x-forwarded-cookie (explicit) > cookie (browser-sent)
+    if (xForwardedCookie) {
+      forwardedHeaders['x-forwarded-cookie'] = xForwardedCookie;
+    } else if (cookie) {
+      forwardedHeaders['x-forwarded-cookie'] = cookie;
+    }
+
+    // Forward client timezone and timestamp together (both required, with validation)
+    if (clientTimezone && clientTimestamp) {
+      // Validate timezone format
+      const isValidTimezone =
+        clientTimezone.length < 100 && /^[A-Za-z0-9_/\-+]+$/.test(clientTimezone);
+      // Validate ISO 8601 timestamp format: "2026-01-16T19:45:30.123Z"
+      const isValidTimestamp =
+        clientTimestamp.length < 50 &&
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/.test(clientTimestamp);
+
+      if (isValidTimezone && isValidTimestamp) {
+        forwardedHeaders['x-agent-fabric-client-timezone'] = clientTimezone;
+        forwardedHeaders['x-agent-fabric-client-timestamp'] = clientTimestamp;
+      } else {
+        logger.warn(
+          {
+            clientTimezone: isValidTimezone ? clientTimezone : clientTimezone.substring(0, 100),
+            clientTimestamp: isValidTimestamp ? clientTimestamp : clientTimestamp.substring(0, 50),
+            isValidTimezone,
+            isValidTimestamp,
+          },
+          'Invalid client timezone or timestamp format, ignoring both'
+        );
+      }
+    } else if (clientTimezone || clientTimestamp) {
+      logger.warn(
+        { hasTimezone: !!clientTimezone, hasTimestamp: !!clientTimestamp },
+        'Client timezone and timestamp must both be present, ignoring'
+      );
+    }
+
+    // Add conversation ID to parent span
+    const conversationId = body.conversationId ?? getConversationId();
+    const activeSpan = trace.getActiveSpan();
+    if (activeSpan) {
+      activeSpan.setAttributes({
+        'conversation.id': conversationId,
+        'tenant.id': tenantId,
+        'agent.id': agentId,
+        'project.id': projectId,
+        ...(targetTenantId && { 'target.tenant.id': targetTenantId }),
+        ...(targetProjectId && { 'target.project.id': targetProjectId }),
+        ...(targetAgentId && { 'target.agent.id': targetAgentId }),
+      });
+    }
+
+    // Update baggage with conversation.id for all child spans
+    let currentBag = propagation.getBaggage(otelContext.active());
+    if (!currentBag) {
+      currentBag = propagation.createBaggage();
+    }
+    currentBag = currentBag.setEntry('conversation.id', { value: conversationId });
+    // Create context with updated baggage and execute within it
+    const ctxWithBaggage = propagation.setBaggage(otelContext.active(), currentBag);
+    // Execute remaining handler within the baggage context so child spans inherit attributes
+    return await otelContext.with(ctxWithBaggage, async () => {
+      const agent = executionContext.project.agents[agentId];
+
+      if (!agent) {
+        throw createApiError({
+          code: 'not_found',
+          message: 'Agent not found',
+        });
+      }
+
+      const defaultSubAgentId = agent.defaultSubAgentId;
+      const agentName = agent.name;
+
+      if (!defaultSubAgentId) {
+        throw createApiError({
+          code: 'bad_request',
+          message: 'Agent does not have a default agent configured',
+        });
+      }
+
+      const activeAgent = await getActiveAgentForConversation(runDbClient)({
+        scopes: { tenantId, projectId },
+        conversationId,
+      });
+      const resolvedUserPropertiesRaw =
+        body.userProperties ??
+        parseAgentFabricJsonHeader(c.req.header('x-agent-fabric-user-properties'), {
+          headerName: 'x-agent-fabric-user-properties',
+          logger,
+        });
+      const resolvedUserProperties = isAutoMintIdentity(resolvedUserPropertiesRaw)
+        ? undefined
+        : stripIdentificationType(resolvedUserPropertiesRaw);
+      const resolvedProperties =
+        body.properties ??
+        parseAgentFabricJsonHeader(c.req.header('x-agent-fabric-properties'), {
+          headerName: 'x-agent-fabric-properties',
+          logger,
+        });
+      const conversationMeta = buildConversationMetadata(executionContext);
+      await createOrGetConversation(runDbClient)({
+        tenantId,
+        projectId,
+        id: conversationId,
+        agentId: agentId,
+        activeSubAgentId: activeAgent?.activeSubAgentId ?? defaultSubAgentId,
+        ref: executionContext.resolvedRef,
+        userId: executionContext.metadata?.endUserId,
+        ...(conversationMeta ? { metadata: conversationMeta } : {}),
+        ...(resolvedUserProperties !== undefined ? { userProperties: resolvedUserProperties } : {}),
+        ...(resolvedProperties !== undefined ? { properties: resolvedProperties } : {}),
+      });
+      if (!activeAgent) {
+        await setActiveAgentForConversation(runDbClient)({
+          scopes: { tenantId, projectId },
+          conversationId,
+          subAgentId: defaultSubAgentId,
+          ref: executionContext.resolvedRef,
+          agentId: agentId,
+          userId: executionContext.metadata?.endUserId,
+          ...(conversationMeta ? { metadata: conversationMeta } : {}),
+        });
+      }
+      const subAgentId = activeAgent?.activeSubAgentId || defaultSubAgentId;
+
+      logger.info({ subAgentId }, 'subAgentId');
+      const agentInfo = executionContext.project.agents[agentId]?.subAgents[subAgentId];
+      if (!agentInfo) {
+        logger.error({ subAgentId }, 'subAgentId not found');
+        throw createApiError({
+          code: 'not_found',
+          message: 'Agent not found',
+        });
+      }
+
+      // Get validated context from middleware (falls back to body.headers if no validation)
+      const validatedContext = (c as any).get('validatedContext') || body.headers || {};
+
+      const credentialStores = c.get('credentialStores');
+
+      // Context resolution with intelligent conversation state detection
+      const prefetchedDestinations = executionContext.resolvedRef
+        ? await prefetchWebhookDestinations({
+            tenantId,
+            projectId,
+            agentId,
+            resolvedRef: executionContext.resolvedRef,
+          })
+        : undefined;
+
+      await handleContextResolution({
+        executionContext,
+        conversationId,
+        headers: validatedContext,
+        credentialStores,
+        prefetchedDestinations,
+        conversationUserProperties: resolvedUserProperties ?? null,
+        conversationProperties: resolvedProperties ?? null,
+      });
+
+      // Store last user message
+      const lastUserMessage = body.messages.filter((m) => m.role === 'user').slice(-1)[0];
+
+      // Build Part[] for execution (text + image parts), validated against core PartSchema
+      const parsedMessageParts: Part[] = z
+        .array(PartSchema)
+        .parse(getMessagePartsFromVercelContent(lastUserMessage?.content, lastUserMessage?.parts));
+      const messageParts = await inlineExternalPdfUrlParts(parsedMessageParts);
+
+      // Extract text content from parts
+      const userText = extractTextFromParts(messageParts) || '';
+
+      logger.info({ userText, lastUserMessage }, 'userText');
+      const messageSpan = trace.getActiveSpan();
+      if (messageSpan) {
+        messageSpan.setAttributes({
+          'message.timestamp': new Date().toISOString(),
+          'message.content': userText,
+          'agent.name': agentName,
+        });
+        const invocationType = c.req.header('x-agent-fabric-invocation-type');
+        if (invocationType) {
+          messageSpan.setAttribute('invocation.type', invocationType);
+        }
+        const invocationEntryPoint = c.req.header('x-agent-fabric-invocation-entry-point');
+        if (invocationEntryPoint) {
+          messageSpan.setAttribute('invocation.entryPoint', invocationEntryPoint);
+        }
+
+        // Add user information from execution context metadata if available
+        if (executionContext.metadata?.initiatedBy) {
+          messageSpan.setAttribute('user.type', executionContext.metadata.initiatedBy.type);
+          messageSpan.setAttribute('user.id', executionContext.metadata.initiatedBy.id);
+        }
+      }
+      // Honor a client-supplied user-message id so events fired client-side
+      // (before this row lands) join back to messages.id. Read off the same
+      // message we extract content from (lastUserMessage) so the id matches
+      // the content for multi-turn callers that send full history.
+      // body.messageId remains a fallback for direct API consumers.
+      const userMessageId = lastUserMessage?.id ?? body.messageId ?? generateId();
+      const hasAttachedFiles = messageParts.some((part) => part.kind === 'file');
+      const attachmentTaskId = hasAttachedFiles ? `message_${userMessageId}` : undefined;
+
+      if (messageSpan) {
+        messageSpan.setAttribute('message.id', userMessageId);
+      }
+
+      const messageContent = await buildPersistedMessageContent(userText, messageParts, {
+        tenantId,
+        projectId,
+        conversationId,
+        messageId: userMessageId,
+        taskId: `message_${userMessageId}`,
+        toolCallId: buildMessageAttachmentToolCallId(userMessageId),
+        source: 'user-message',
+      });
+
+      try {
+        await createMessage(runDbClient)({
+          scopes: { tenantId, projectId },
+          data: {
+            id: userMessageId,
+            conversationId,
+            role: 'user',
+            content: messageContent,
+            visibility: 'user-facing',
+            messageType: 'chat',
+            ...(attachmentTaskId ? { taskId: attachmentTaskId } : {}),
+            ...(resolvedUserProperties !== undefined
+              ? { userProperties: resolvedUserProperties }
+              : {}),
+          },
+        });
+      } catch (err) {
+        // unique_violation on (tenantId, projectId, id) — a client retried or
+        // replayed a request with an id that's already persisted in this
+        // (tenant, project). Surface a 409 instead of an unhandled 500 so
+        // callers can recover. Drizzle wraps the underlying pg/Doltgres error;
+        // isUniqueConstraintError() handles both shapes via err.cause.
+        if (isUniqueConstraintError(err)) {
+          logger.info(
+            { userMessageId, tenantId, projectId, conversationId },
+            'createMessage conflict — returning 409'
+          );
+          throw createApiError({
+            code: 'conflict',
+            message: `Message with id '${userMessageId}' already exists in this project`,
+          });
+        }
+        throw err;
+      }
+      if (messageSpan) {
+        messageSpan.addEvent('user.message.stored', {
+          'message.id': userMessageId,
+          'database.operation': 'insert',
+        });
+      }
+
+      if (executionContext.resolvedRef) {
+        emitConversationWebhook({
+          runDbClient,
+          tenantId,
+          projectId,
+          agentId,
+          agentName,
+          conversationId,
+          resolvedRef: executionContext.resolvedRef,
+          eventType: activeAgent ? 'conversation.updated' : 'conversation.created',
+          prefetchedDestinations,
+        });
+      }
+
+      const effectiveExecutionMode = body.executionMode ?? agent.executionMode ?? 'classic';
+
+      if (effectiveExecutionMode === 'durable') {
+        const requestId = `chatds-${Date.now()}`;
+        const userId = getUserIdFromContext(executionContext);
+        const run = await start(agentExecutionWorkflow, [
+          {
+            tenantId,
+            projectId,
+            agentId,
+            conversationId,
+            userMessage: userText,
+            messageParts: messageParts.length > 0 ? messageParts : undefined,
+            requestId,
+            resolvedRef: executionContext.resolvedRef,
+            forwardedHeaders:
+              Object.keys(forwardedHeaders).length > 0 ? forwardedHeaders : undefined,
+            outputFormat: 'vercel',
+            userId,
+          },
+        ]);
+        logger.info(
+          { runId: run.runId, conversationId, agentId },
+          'Durable execution started via /chat'
+        );
+        c.header('x-workflow-run-id', run.runId);
+        c.header('content-type', 'text/event-stream');
+        c.header('cache-control', 'no-cache');
+        c.header('connection', 'keep-alive');
+        c.header('x-vercel-ai-data-stream', 'v2');
+        c.header('x-accel-buffering', 'no');
+        streamBufferRegistry.register({ tenantId, projectId, conversationId });
+        return stream(c, async (s) => {
+          try {
+            const encoder = new TextEncoder();
+            const reader = run.readable.getReader();
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              const encoded = typeof value === 'string' ? encoder.encode(value) : value;
+              streamBufferRegistry.push({ tenantId, projectId, conversationId }, encoded);
+              await s.write(value);
+            }
+          } catch (error) {
+            logger.error(
+              { error, runId: run.runId },
+              'Error streaming durable execution via /chat'
+            );
+            await s.write(`event: error\ndata: ${JSON.stringify({ error: 'Stream error' })}\n\n`);
+          } finally {
+            await streamBufferRegistry.complete({ tenantId, projectId, conversationId });
+          }
+        });
+      }
+
+      const shouldStream = body.stream !== false;
+      if (!shouldStream) {
+        // Non-streaming response - collect full response and return as JSON
+        const emitOperationsHeader = c.req.header('x-emit-operations');
+        const emitOperations = emitOperationsHeader === 'true';
+
+        const bufferingHelper = createBufferingStreamHelper();
+        const responseMessageId = generateId();
+
+        const executionHandler = new ExecutionHandler();
+        const result = await executionHandler.execute({
+          executionContext,
+          conversationId,
+          userMessage: userText,
+          messageParts: messageParts.length > 0 ? messageParts : undefined,
+          initialAgentId: subAgentId,
+          requestId: `chat-${Date.now()}`,
+          sseHelper: bufferingHelper,
+          emitOperations,
+          forwardedHeaders,
+          responseMessageId,
+          prefetchedDestinations,
+          conversationUserProperties: resolvedUserProperties ?? null,
+          conversationProperties: resolvedProperties ?? null,
+        });
+
+        const captured = bufferingHelper.getCapturedResponse();
+
+        return c.json({
+          id: `chat-${Date.now()}`,
+          object: 'chat.completion',
+          created: Math.floor(Date.now() / 1000),
+          model: agentName,
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: 'assistant',
+                content: captured.hasError ? captured.errorMessage : captured.text,
+              },
+              finish_reason: result.success && !captured.hasError ? 'stop' : 'error',
+            },
+          ],
+          usage: {
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+          },
+        });
+      }
+
+      const responseMessageId = generateId();
+
+      // Create UI Message Stream using AI SDK V5
+      const dataStream = createUIMessageStream({
+        execute: async ({ writer }) => {
+          writer.write({ type: 'start', messageId: responseMessageId });
+
+          const requestId = `chatds-${Date.now()}`;
+
+          // Request-scoped TTFT recorder writes to the interaction (HTTP server) span,
+          // the active span at handler entry that wraps all transfer iterations.
+          const ttftRecorder = new TtftRecorder(ttftT0, ttftSpan);
+          registerTtftRecorder(requestId, ttftRecorder);
+
+          const streamHelper = createVercelStreamHelper(writer, ttftRecorder);
+          let unsubscribe: (() => void) | undefined;
+          try {
+            // Check for emit operations header
+            const emitOperationsHeader = c.req.header('x-emit-operations');
+            const emitOperations = emitOperationsHeader === 'true';
+
+            const executionHandler = new ExecutionHandler();
+
+            // Check if this is a dataset run conversation via header
+            const datasetRunId = c.req.header('x-agent-fabric-dataset-run-id');
+
+            const chunkString = (s: string, size = 16) => {
+              const out: string[] = [];
+              for (let i = 0; i < s.length; i += size) out.push(s.slice(i, i + size));
+              return out;
+            };
+
+            const seenToolCalls = new Set<string>();
+            const seenOutputs = new Set<string>();
+
+            unsubscribe = toolApprovalUiBus.subscribe(requestId, async (event) => {
+              if (event.type === APPROVAL_NEEDED_EVENT) {
+                if (seenToolCalls.has(event.toolCallId)) return;
+                seenToolCalls.add(event.toolCallId);
+
+                await streamHelper.writeToolInputStart({
+                  toolCallId: event.toolCallId,
+                  toolName: event.toolName,
+                });
+
+                const inputText = JSON.stringify(event.input ?? {});
+                for (const part of chunkString(inputText, 16)) {
+                  await streamHelper.writeToolInputDelta({
+                    toolCallId: event.toolCallId,
+                    inputTextDelta: part,
+                  });
+                }
+
+                await streamHelper.writeToolInputAvailable({
+                  toolCallId: event.toolCallId,
+                  toolName: event.toolName,
+                  input: event.input ?? {},
+                  providerMetadata: event.providerMetadata,
+                });
+
+                await streamHelper.writeToolApprovalRequest({
+                  approvalId: event.approvalId,
+                  toolCallId: event.toolCallId,
+                  toolName: event.toolName,
+                  input: event.input as Record<string, unknown>,
+                });
+              } else if (event.type === APPROVAL_RESOLVED_EVENT) {
+                if (seenOutputs.has(event.toolCallId)) return;
+                seenOutputs.add(event.toolCallId);
+
+                if (event.approved) {
+                  await streamHelper.writeToolOutputAvailable({
+                    toolCallId: event.toolCallId,
+                    output: { status: 'approved' },
+                  });
+                } else {
+                  await streamHelper.writeToolOutputDenied({ toolCallId: event.toolCallId });
+                }
+              }
+            });
+
+            const result = await executionHandler.execute({
+              executionContext,
+              conversationId,
+              userMessage: userText,
+              messageParts: messageParts.length > 0 ? messageParts : undefined,
+              initialAgentId: subAgentId,
+              requestId,
+              sseHelper: streamHelper,
+              emitOperations,
+              datasetRunId: datasetRunId || undefined,
+              forwardedHeaders,
+              responseMessageId,
+              prefetchedDestinations,
+              conversationUserProperties: resolvedUserProperties ?? null,
+              conversationProperties: resolvedProperties ?? null,
+            });
+
+            if (!result.success) {
+              await streamHelper.writeOperation(errorOp('Unable to process request', 'system'));
+            }
+          } catch (err) {
+            logger.error({ err }, 'Streaming error');
+            await streamHelper.writeOperation(errorOp('Internal server error', 'system'));
+          } finally {
+            try {
+              unsubscribe?.();
+            } catch (_e) {}
+            unregisterTtftRecorder(requestId);
+            // Clean up stream helper resources if it has cleanup method
+            if ('cleanup' in streamHelper && typeof streamHelper.cleanup === 'function') {
+              streamHelper.cleanup();
+            }
+            await flushBatchProcessor();
+          }
+        },
+      });
+
+      c.header('content-type', 'text/event-stream');
+      c.header('cache-control', 'no-cache');
+      c.header('connection', 'keep-alive');
+      c.header('x-vercel-ai-data-stream', 'v2');
+      c.header('x-accel-buffering', 'no'); // disable nginx buffering
+
+      const encodedStream = dataStream
+        .pipeThrough(new JsonToSseTransformStream())
+        .pipeThrough(new TextEncoderStream());
+
+      const [clientStream, bufferStream] = encodedStream.tee();
+
+      streamBufferRegistry.register({ tenantId, projectId, conversationId });
+      (async () => {
+        const reader = bufferStream.getReader();
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            streamBufferRegistry.push({ tenantId, projectId, conversationId }, value);
+          }
+        } catch (error) {
+          logger.error({ error, conversationId }, 'Error buffering stream for resumption');
+        } finally {
+          await streamBufferRegistry.complete({ tenantId, projectId, conversationId });
+        }
+      })();
+
+      return stream(c, (s) => s.pipe(clientStream));
+    });
+  } catch (error) {
+    if (error instanceof FileSecurityError) {
+      throw createApiError({
+        code: 'bad_request',
+        message: error.message,
+      });
+    }
+    if (error instanceof PdfUrlIngestionError) {
+      throw createApiError({
+        code: 'bad_request',
+        message: error.message,
+      });
+    }
+    if (error instanceof HTTPException) {
+      throw error;
+    }
+    logger.error(
+      {
+        error,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        errorStack: error instanceof Error ? error.stack : undefined,
+        errorType: error?.constructor?.name,
+      },
+      'chatDataStream error - DETAILED'
+    );
+    throw createApiError({
+      code: 'internal_server_error',
+      message: 'Failed to process chat completion',
+    });
+  }
+});
+
+export default app;

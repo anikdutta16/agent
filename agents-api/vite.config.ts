@@ -1,0 +1,56 @@
+import devServer from '@hono/vite-dev-server';
+import type { Plugin } from 'vite';
+import { defineConfig } from 'vite';
+import tsconfigPaths from 'vite-tsconfig-paths';
+import { workflow } from 'workflow/vite';
+
+/**
+ * Sends a warmup request after the Vite dev server starts so that the Hono app
+ * module is loaded eagerly. Without this, module-level side effects (like Slack
+ * Socket Mode initialization) would not run until the first external request.
+ */
+function warmup(): Plugin {
+  return {
+    name: 'warmup',
+    configureServer(server) {
+      server.httpServer?.once('listening', () => {
+        const addr = server.httpServer?.address();
+        if (addr && typeof addr === 'object') {
+          fetch(`http://localhost:${addr.port}/`).catch(() => {});
+        }
+      });
+    },
+  };
+}
+
+export default defineConfig({
+  plugins: [
+    tsconfigPaths(),
+    workflow(),
+    devServer({
+      entry: 'src/index.ts',
+    }),
+    warmup(),
+  ],
+  server: {
+    port: (() => {
+      const p = parseInt(process.env.AGENTS_API_PORT || '3002', 10);
+      if (Number.isNaN(p))
+        throw new Error(`Invalid AGENTS_API_PORT: "${process.env.AGENTS_API_PORT}"`);
+      return p;
+    })(),
+    strictPort: true,
+    cors: false,
+    allowedHosts: true,
+  },
+  optimizeDeps: {
+    exclude: [
+      '@napi-rs/keyring',
+      'workflow',
+      '@workflow/world-local',
+      '@workflow/world-postgres',
+      '@workflow/world-vercel',
+      '@workflow/core',
+    ],
+  },
+});

@@ -1,0 +1,6 @@
+import { statusComponent } from '@agent-fabric/agents-sdk';
+
+export const simpleProgress = statusComponent({
+  type: 'simple_progress',
+  description: 'A simple progress status component',
+});

@@ -1,0 +1,325 @@
+'use client';
+
+import {
+  Activity,
+  AppWindow,
+  ArrowLeft,
+  BarChart3,
+  Blocks,
+  Coins,
+  Component,
+  CreditCard,
+  Database,
+  Globe,
+  Key,
+  Layers,
+  Library,
+  Lock,
+  LucideHexagon,
+  MessageSquare,
+  Settings,
+  Sparkles,
+  Users,
+  Workflow,
+  Zap,
+} from 'lucide-react';
+import Link from 'next/link';
+import { useParams, usePathname } from 'next/navigation';
+import { type ComponentProps, type Dispatch, type FC, useEffect, useState } from 'react';
+import { MCPIcon } from '@/components/icons/mcp-icon';
+import { AgentFabricLogo } from '@/components/sidebar-nav/agent-fabric-logo';
+import { NavGroup, type NavItemProps } from '@/components/sidebar-nav/nav-group';
+import { ProjectSwitcher } from '@/components/sidebar-nav/project-switcher';
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarHeader,
+  SidebarMenuButton,
+} from '@/components/ui/sidebar';
+import { STATIC_LABELS } from '@/constants/theme';
+import { useAuthSession } from '@/hooks/use-auth';
+import { fetchEntitlements } from '@/lib/api/entitlements';
+import { useCapabilitiesQuery } from '@/lib/query/capabilities';
+import { cn } from '@/lib/utils';
+import { throttle } from '@/lib/utils/throttle';
+
+interface AppSidebarProps extends ComponentProps<typeof Sidebar> {
+  open: boolean;
+  setOpen: Dispatch<boolean>;
+}
+
+export const AppSidebar: FC<AppSidebarProps> = ({ open, setOpen, ...props }) => {
+  const { tenantId, projectId } = useParams<{ tenantId: string; projectId?: string }>();
+  const pathname = usePathname();
+  const { user } = useAuthSession();
+
+  const isWorkAppsEnabled = process.env.NEXT_PUBLIC_ENABLE_WORK_APPS === 'true';
+  const { data: capabilities } = useCapabilitiesQuery();
+  const costTrackingEnabled = capabilities?.costTracking?.enabled;
+  const [hasEntitlements, setHasEntitlements] = useState(false);
+
+  useEffect(() => {
+    setHasEntitlements(false);
+    if (!tenantId) return;
+
+    let cancelled = false;
+    fetchEntitlements(tenantId)
+      .then((entitlements) => {
+        if (!cancelled) setHasEntitlements(entitlements.length > 0);
+      })
+      .catch(() => {
+        if (!cancelled) setHasEntitlements(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [tenantId]);
+
+  const topNavItems: NavItemProps[] = projectId
+    ? []
+    : [
+        {
+          title: STATIC_LABELS.projects,
+          url: `/${tenantId}/projects`,
+          icon: Layers,
+        },
+        {
+          title: STATIC_LABELS.stats,
+          url: `/${tenantId}/stats`,
+          icon: BarChart3,
+        },
+        ...(costTrackingEnabled
+          ? [
+              {
+                title: 'Cost',
+                url: `/${tenantId}/cost`,
+                icon: Coins,
+              },
+            ]
+          : []),
+        ...(isWorkAppsEnabled
+          ? [
+              {
+                title: STATIC_LABELS['work-apps'],
+                url: `/${tenantId}/work-apps`,
+                icon: Blocks,
+              },
+            ]
+          : []),
+      ];
+
+  const orgNavItems: NavItemProps[] = [
+    {
+      title: STATIC_LABELS.members,
+      url: `/${tenantId}/members`,
+      icon: Users,
+    },
+    ...(hasEntitlements
+      ? [
+          {
+            title: STATIC_LABELS.billing,
+            url: `/${tenantId}/billing`,
+            icon: CreditCard,
+          },
+        ]
+      : []),
+    {
+      title: STATIC_LABELS.settings,
+      url: `/${tenantId}/settings`,
+      icon: Settings,
+    },
+  ];
+
+  const configureNavItems: NavItemProps[] = projectId
+    ? [
+        {
+          title: STATIC_LABELS.agents,
+          url: `/${tenantId}/projects/${projectId}/agents`,
+          icon: Workflow,
+        },
+        {
+          title: STATIC_LABELS.skills,
+          url: `/${tenantId}/projects/${projectId}/skills`,
+          icon: LucideHexagon,
+        },
+        {
+          title: STATIC_LABELS.triggers,
+          url: `/${tenantId}/projects/${projectId}/triggers`,
+          icon: Zap,
+        },
+        {
+          title: STATIC_LABELS.apps,
+          url: `/${tenantId}/projects/${projectId}/apps`,
+          icon: AppWindow,
+        },
+        {
+          title: STATIC_LABELS['api-keys'],
+          url: `/${tenantId}/projects/${projectId}/api-keys`,
+          icon: Key,
+        },
+        {
+          title: STATIC_LABELS.settings,
+          url: `/${tenantId}/projects/${projectId}/settings`,
+          icon: Settings,
+        },
+        {
+          title: 'Members',
+          url: `/${tenantId}/projects/${projectId}/members`,
+          icon: Users,
+        },
+      ]
+    : [];
+
+  const registerNavItems: NavItemProps[] = projectId
+    ? [
+        {
+          title: STATIC_LABELS['mcp-servers'],
+          url: `/${tenantId}/projects/${projectId}/mcp-servers`,
+          icon: MCPIcon,
+        },
+        {
+          title: STATIC_LABELS.credentials,
+          url: `/${tenantId}/projects/${projectId}/credentials`,
+          icon: Lock,
+        },
+        {
+          title: STATIC_LABELS['external-agents'],
+          url: `/${tenantId}/projects/${projectId}/external-agents`,
+          icon: Globe,
+        },
+      ]
+    : [];
+
+  const uiNavItems: NavItemProps[] = projectId
+    ? [
+        {
+          title: STATIC_LABELS.components,
+          url: `/${tenantId}/projects/${projectId}/components`,
+          icon: Component,
+        },
+        {
+          title: STATIC_LABELS.artifacts,
+          url: `/${tenantId}/projects/${projectId}/artifacts`,
+          icon: Library,
+        },
+      ]
+    : [];
+
+  const monitorNavItems: NavItemProps[] = projectId
+    ? [
+        {
+          title: STATIC_LABELS.traces,
+          url: `/${tenantId}/projects/${projectId}/traces`,
+          icon: Activity,
+        },
+        {
+          title: STATIC_LABELS.feedback,
+          url: `/${tenantId}/projects/${projectId}/feedback`,
+          icon: MessageSquare,
+        },
+        {
+          title: STATIC_LABELS['webhook-destinations'],
+          url: `/${tenantId}/projects/${projectId}/webhook-destinations`,
+          icon: Globe,
+        },
+        {
+          title: 'Test Suites',
+          url: `/${tenantId}/projects/${projectId}/datasets`,
+          icon: Database,
+        },
+        {
+          title: STATIC_LABELS.evaluations,
+          url: `/${tenantId}/projects/${projectId}/evaluations`,
+          icon: BarChart3,
+        },
+        {
+          title: 'Branches',
+          url: `/${tenantId}/projects/${projectId}/improvements`,
+          icon: Sparkles,
+        },
+        ...(costTrackingEnabled
+          ? [
+              {
+                title: 'Cost',
+                url: `/${tenantId}/projects/${projectId}/cost`,
+                icon: Coins,
+              },
+            ]
+          : []),
+      ]
+    : [];
+
+  const handleHover = throttle(200, (event) => {
+    const isBlur = event.type === 'mouseleave';
+
+    if (isBlur) {
+      const blurToElement = event.relatedTarget;
+      const insideMainContent =
+        blurToElement &&
+        blurToElement instanceof HTMLElement &&
+        !!blurToElement.closest('#main-content');
+
+      if (!insideMainContent) {
+        return;
+      }
+    }
+    setOpen(!isBlur);
+  }) satisfies ComponentProps<'div'>['onMouseEnter'];
+
+  return (
+    <Sidebar
+      collapsible="icon"
+      variant="inset"
+      onMouseEnter={handleHover}
+      onMouseLeave={handleHover}
+      {...props}
+    >
+      <SidebarHeader>
+        <SidebarMenuButton asChild>
+          <Link href={`/${tenantId}/projects`}>
+            <AgentFabricLogo className="text-[#231F20] dark:text-white" />
+          </Link>
+        </SidebarMenuButton>
+      </SidebarHeader>
+      <SidebarContent className="justify-between">
+        {projectId ? (
+          <div className="flex flex-col gap-1.5">
+            <div className="px-2 py-1">
+              <SidebarMenuButton asChild>
+                <Link
+                  className="font-mono uppercase text-xs hover:bg-transparent gap-1.5!"
+                  href={`/${tenantId}/projects`}
+                >
+                  <ArrowLeft
+                    className={cn(
+                      open ? 'size-3.5!' : 'size-4!',
+                      'transition-[size] duration-300 ease-in-out'
+                    )}
+                    aria-hidden="true"
+                  />
+                  <span>Back to org</span>
+                </Link>
+              </SidebarMenuButton>
+            </div>
+            <NavGroup currentPath={pathname} items={configureNavItems} />
+            <NavGroup currentPath={pathname} label="Register" items={registerNavItems} />
+            <NavGroup currentPath={pathname} label="UI" items={uiNavItems} />
+            <NavGroup currentPath={pathname} label="Monitor" items={monitorNavItems} />
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            <NavGroup currentPath={pathname} items={topNavItems} />
+            {user && <NavGroup currentPath={pathname} label="Organization" items={orgNavItems} />}
+          </div>
+        )}
+      </SidebarContent>
+      {projectId && (
+        <SidebarFooter>
+          <ProjectSwitcher />
+        </SidebarFooter>
+      )}
+    </Sidebar>
+  );
+};

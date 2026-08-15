@@ -1,0 +1,494 @@
+'use client';
+
+import {
+  Clock,
+  Copy,
+  GitBranch,
+  History,
+  MoreHorizontal,
+  Pencil,
+  Play,
+  RotateCw,
+  Trash2,
+} from 'lucide-react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
+import { toast } from 'sonner';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { Switch } from '@/components/ui/switch';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { useAuthSession } from '@/hooks/use-auth';
+import { useIsOrgAdmin } from '@/hooks/use-is-org-admin';
+import { useOrgMembers } from '@/hooks/use-org-members';
+import {
+  deleteScheduledTriggerAction,
+  runScheduledTriggerNowAction,
+  updateScheduledTriggerEnabledAction,
+} from '@/lib/actions/scheduled-triggers';
+import type { ScheduledTriggerWithAgent } from '@/lib/api/project-triggers';
+import { getCronDescription } from '@/lib/utils/cron';
+import {
+  formatDateTimeLocal,
+  getLocalTimezoneAbbreviation,
+  getTimezoneAbbreviation,
+} from '@/lib/utils/format-date';
+
+interface ProjectScheduledTriggersTableProps {
+  triggers: ScheduledTriggerWithAgent[];
+  tenantId: string;
+  projectId: string;
+}
+
+function getScheduleType(trigger: ScheduledTriggerWithAgent): 'cron' | 'one-time' {
+  return trigger.cronExpression ? 'cron' : 'one-time';
+}
+
+function getTriggerTimezone(trigger: ScheduledTriggerWithAgent): string {
+  return trigger.cronTimezone || 'UTC';
+}
+
+function formatLastRun(trigger: ScheduledTriggerWithAgent): string {
+  if (trigger.lastRunAt) {
+    return formatDateTimeLocal(trigger.lastRunAt);
+  }
+  return '—';
+}
+
+function formatNextRun(trigger: ScheduledTriggerWithAgent): string {
+  if (!trigger.enabled) {
+    return '—';
+  }
+  if (trigger.nextRunAt) {
+    return formatDateTimeLocal(trigger.nextRunAt);
+  }
+  return '—';
+}
+
+export function ProjectScheduledTriggersTable({
+  triggers,
+  tenantId,
+  projectId,
+}: ProjectScheduledTriggersTableProps) {
+  const router = useRouter();
+  const [isMounted, setIsMounted] = useState(false);
+  const [loadingTriggers, setLoadingTriggers] = useState<Set<string>>(new Set());
+  const { members: orgMembers } = useOrgMembers(tenantId);
+  const { user } = useAuthSession();
+  const { isAdmin } = useIsOrgAdmin();
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
+
+  const canManageTrigger = (trigger: ScheduledTriggerWithAgent): boolean => {
+    if (!isMounted) return false;
+    if (isAdmin) return true;
+    if (!user) return false;
+    if (trigger.createdBy === user.id || trigger.runAsUserId === user.id) return true;
+    const userIds = trigger.runAsUserIds ?? [];
+    return userIds.length === 1 && userIds[0] === user.id;
+  };
+
+  const getUserDisplayName = (userId: string): string => {
+    const member = orgMembers.find((m) => m.id === userId);
+    return member?.name || member?.email || userId;
+  };
+
+  const toggleEnabled = async (
+    triggerId: string,
+    agentId: string | null,
+    currentEnabled: boolean
+  ) => {
+    if (!agentId) return;
+    const newEnabled = !currentEnabled;
+    setLoadingTriggers((prev) => new Set(prev).add(triggerId));
+
+    try {
+      const result = await updateScheduledTriggerEnabledAction(
+        tenantId,
+        projectId,
+        agentId,
+        triggerId,
+        newEnabled
+      );
+      if (result.success) {
+        toast.success(`Scheduled trigger ${newEnabled ? 'enabled' : 'disabled'}`);
+        router.refresh();
+      } else {
+        toast.error(result.error);
+      }
+    } catch (error) {
+      console.error('Failed to update scheduled trigger:', error);
+      toast.error('Failed to update scheduled trigger status');
+    }
+    setLoadingTriggers((prev) => {
+      const newSet = new Set(prev);
+      newSet.delete(triggerId);
+      return newSet;
+    });
+  };
+
+  const deleteTrigger = async (triggerId: string, agentId: string | null, name: string) => {
+    if (!agentId) return;
+    if (!confirm(`Are you sure you want to delete the scheduled trigger "${name}"?`)) {
+      return;
+    }
+
+    setLoadingTriggers((prev) => new Set(prev).add(triggerId));
+
+    try {
+      const result = await deleteScheduledTriggerAction(tenantId, projectId, agentId, triggerId);
+      if (result.success) {
+        toast.success(`Scheduled trigger "${name}" deleted successfully`);
+        router.refresh();
+      } else {
+        toast.error(result.error);
+        setLoadingTriggers((prev) => {
+          const newSet = new Set(prev);
+          newSet.delete(triggerId);
+          return newSet;
+        });
+      }
+    } catch (error) {
+      console.error('Failed to delete scheduled trigger:', error);
+      toast.error('Failed to delete scheduled trigger');
+      setLoadingTriggers((prev) => {
+        const newSet = new Set(prev);
+        newSet.delete(triggerId);
+        return newSet;
+      });
+    }
+  };
+
+  const runTrigger = async (triggerId: string, agentId: string | null, name: string) => {
+    if (!agentId) return;
+    if (loadingTriggers.has(triggerId)) return;
+    setLoadingTriggers((prev) => new Set(prev).add(triggerId));
+
+    try {
+      const result = await runScheduledTriggerNowAction(tenantId, projectId, agentId, triggerId);
+      if (result.success) {
+        toast.success(`Scheduled trigger "${name}" started`);
+        router.refresh();
+      } else {
+        toast.error(result.error);
+      }
+    } catch (error) {
+      console.error('Failed to run scheduled trigger:', error);
+      toast.error('Failed to run scheduled trigger');
+    }
+    setLoadingTriggers((prev) => {
+      const newSet = new Set(prev);
+      newSet.delete(triggerId);
+      return newSet;
+    });
+  };
+
+  const localTz = getLocalTimezoneAbbreviation();
+
+  return (
+    <div className="rounded-lg border">
+      <Table>
+        <TableHeader>
+          <TableRow noHover>
+            <TableHead>Name</TableHead>
+            <TableHead>Agent</TableHead>
+            <TableHead>Branch</TableHead>
+            <TableHead>Run As</TableHead>
+            <TableHead>Type</TableHead>
+            <TableHead>Schedule</TableHead>
+            <TableHead>Last Run{localTz ? ` (${localTz})` : ''}</TableHead>
+            <TableHead>Next Run{localTz ? ` (${localTz})` : ''}</TableHead>
+            <TableHead>Status</TableHead>
+            <TableHead className="w-12" />
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {triggers.length === 0 ? (
+            <TableRow noHover>
+              <TableCell colSpan={10} className="text-center text-muted-foreground py-8">
+                No scheduled triggers configured yet. Create a scheduled trigger to run your agents
+                on a schedule.
+              </TableCell>
+            </TableRow>
+          ) : (
+            triggers.map((trigger) => {
+              const isLoading = loadingTriggers.has(trigger.id);
+              const scheduleType = getScheduleType(trigger);
+              const canManage = canManageTrigger(trigger);
+
+              return (
+                <TableRow key={trigger.id} noHover>
+                  <TableCell>
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2 font-medium text-foreground">
+                        {trigger.name}
+                        {trigger.datasetRunConfigId ? (
+                          <Badge variant="outline" className="text-xs">
+                            Dataset Run
+                          </Badge>
+                        ) : null}
+                      </div>
+                      {trigger.description && (
+                        <div className="text-sm text-muted-foreground max-w-md truncate">
+                          {trigger.description}
+                        </div>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    {trigger.agentId ? (
+                      <Link
+                        href={`/${tenantId}/projects/${projectId}/agents/${trigger.agentId}`}
+                        className="text-sm text-muted-foreground hover:text-foreground hover:underline"
+                      >
+                        {trigger.agentName}
+                      </Link>
+                    ) : (
+                      <Badge variant="outline" className="text-xs">
+                        Dataset Run
+                      </Badge>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <span className="inline-flex items-center gap-1.5 text-sm text-muted-foreground">
+                      <GitBranch className="h-3.5 w-3.5" />
+                      {trigger.ref || 'main'}
+                    </span>
+                  </TableCell>
+                  <TableCell>
+                    {trigger.userCount && trigger.userCount > 1 ? (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Badge variant="secondary" className="cursor-default">
+                              {trigger.userCount} users
+                            </Badge>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <div className="flex flex-col gap-1">
+                              {trigger.runAsUserIds?.map((uid) => (
+                                <span key={uid} className="text-xs">
+                                  {getUserDisplayName(uid)}
+                                </span>
+                              ))}
+                            </div>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    ) : trigger.runAsUserIds && trigger.runAsUserIds.length === 1 ? (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="text-sm text-muted-foreground truncate max-w-[150px] inline-block cursor-default">
+                              {getUserDisplayName(trigger.runAsUserIds[0])}
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <code className="font-mono text-xs">{trigger.runAsUserIds[0]}</code>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    ) : trigger.runAsUserId ? (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="text-sm text-muted-foreground truncate max-w-[150px] inline-block cursor-default">
+                              {getUserDisplayName(trigger.runAsUserId)}
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <code className="font-mono text-xs">{trigger.runAsUserId}</code>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="code" className="gap-1 uppercase">
+                      {scheduleType === 'cron' ? (
+                        <RotateCw className="w-3 h-3" />
+                      ) : (
+                        <Clock className="w-3 h-3" />
+                      )}
+                      {scheduleType === 'cron' ? 'Recurring' : 'One-time'}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    {trigger.cronExpression ? (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <code className="bg-muted text-muted-foreground rounded-md border px-2 py-1 text-xs w-fit">
+                              {getCronDescription(trigger.cronExpression)}{' '}
+                              {getTimezoneAbbreviation(getTriggerTimezone(trigger))}
+                            </code>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <code className="font-mono">
+                              {trigger.cronExpression} ({getTriggerTimezone(trigger)})
+                            </code>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    ) : (
+                      <code className="bg-muted text-muted-foreground rounded-md border px-2 py-1 text-xs w-fit">
+                        {trigger.runAt ? formatDateTimeLocal(trigger.runAt) : '—'}
+                      </code>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {trigger.lastRunConversationIds.length > 0 ? (
+                      <Link
+                        href={`/${tenantId}/projects/${projectId}/traces/conversations/${trigger.lastRunConversationIds[trigger.lastRunConversationIds.length - 1]}`}
+                        className={`text-sm hover:underline ${
+                          trigger.lastRunStatus === 'completed'
+                            ? 'text-primary'
+                            : trigger.lastRunStatus === 'failed'
+                              ? 'text-red-500'
+                              : 'text-muted-foreground'
+                        }`}
+                      >
+                        {formatLastRun(trigger)}
+                      </Link>
+                    ) : (
+                      <span
+                        className={`text-sm ${
+                          trigger.lastRunStatus === 'completed'
+                            ? 'text-primary'
+                            : trigger.lastRunStatus === 'failed'
+                              ? 'text-red-500'
+                              : 'text-muted-foreground'
+                        }`}
+                      >
+                        {formatLastRun(trigger)}
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <span className="text-sm text-muted-foreground">{formatNextRun(trigger)}</span>
+                  </TableCell>
+                  <TableCell>
+                    {scheduleType === 'one-time' && trigger.lastRunAt ? (
+                      <span className="text-muted-foreground">—</span>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <Switch
+                          checked={trigger.enabled}
+                          onCheckedChange={() =>
+                            toggleEnabled(trigger.id, trigger.agentId, trigger.enabled)
+                          }
+                          disabled={isLoading || !canManage}
+                        />
+                        <Badge className="uppercase" variant={trigger.enabled ? 'primary' : 'code'}>
+                          {trigger.enabled ? 'Enabled' : 'Disabled'}
+                        </Badge>
+                      </div>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon-sm" disabled={isLoading}>
+                          <MoreHorizontal className="w-4 h-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        {canManage && (
+                          <DropdownMenuItem
+                            onClick={() => runTrigger(trigger.id, trigger.agentId, trigger.name)}
+                          >
+                            <Play className="w-4 h-4" />
+                            Run Now
+                          </DropdownMenuItem>
+                        )}
+                        <DropdownMenuItem asChild>
+                          <Link
+                            href={`/${tenantId}/projects/${projectId}/triggers/scheduled/${trigger.agentId ?? '_'}/${trigger.id}/invocations`}
+                          >
+                            <History className="w-4 h-4" />
+                            View Invocations
+                          </Link>
+                        </DropdownMenuItem>
+                        {canManage && trigger.agentId && (
+                          <DropdownMenuItem asChild>
+                            <Link
+                              href={`/${tenantId}/projects/${projectId}/triggers/scheduled/${trigger.agentId}/${trigger.id}/edit`}
+                            >
+                              <Pencil className="w-4 h-4" />
+                              Edit
+                            </Link>
+                          </DropdownMenuItem>
+                        )}
+                        {trigger.agentId && (
+                          <DropdownMenuItem asChild>
+                            <Link
+                              href={`/${tenantId}/projects/${projectId}/triggers/scheduled/${trigger.agentId}/new?${new URLSearchParams(
+                                {
+                                  ...(trigger.cronExpression
+                                    ? {
+                                        scheduleType: 'cron',
+                                        cronExpression: trigger.cronExpression,
+                                        cronTimezone: trigger.cronTimezone || 'UTC',
+                                      }
+                                    : {
+                                        scheduleType: 'one-time',
+                                        ...(trigger.runAt ? { runAt: trigger.runAt } : {}),
+                                      }),
+                                  ...(trigger.payload
+                                    ? { payloadJson: JSON.stringify(trigger.payload) }
+                                    : {}),
+                                  ...(trigger.messageTemplate
+                                    ? { messageTemplate: trigger.messageTemplate }
+                                    : {}),
+                                  maxRetries: String(trigger.maxRetries ?? 1),
+                                  retryDelaySeconds: String(trigger.retryDelaySeconds ?? 60),
+                                  timeoutSeconds: String(trigger.timeoutSeconds ?? 780),
+                                  ...(trigger.ref ? { ref: trigger.ref } : {}),
+                                }
+                              ).toString()}`}
+                            >
+                              <Copy className="w-4 h-4" />
+                              Duplicate
+                            </Link>
+                          </DropdownMenuItem>
+                        )}
+                        {canManage && (
+                          <DropdownMenuItem
+                            variant="destructive"
+                            onClick={() => deleteTrigger(trigger.id, trigger.agentId, trigger.name)}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                            Delete
+                          </DropdownMenuItem>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </TableCell>
+                </TableRow>
+              );
+            })
+          )}
+        </TableBody>
+      </Table>
+    </div>
+  );
+}

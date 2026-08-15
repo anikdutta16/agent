@@ -1,0 +1,9 @@
+import { fetchDefinition } from '@agent-fabric/agents-core';
+
+const test = fetchDefinition({
+  id: 'test',
+  fetchConfig: {
+    url: 'test',
+    method: 'GET',
+  },
+});

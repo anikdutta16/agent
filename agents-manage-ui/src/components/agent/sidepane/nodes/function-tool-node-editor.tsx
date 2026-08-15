@@ -1,0 +1,219 @@
+import type { Node } from '@xyflow/react';
+import { Sparkles, Trash2 } from 'lucide-react';
+import { useState } from 'react';
+import { useWatch } from 'react-hook-form';
+import {
+  FullAgentFunctionSchema,
+  FullAgentFunctionToolSchema,
+} from '@/components/agent/form/validation';
+import { GenericCheckbox } from '@/components/form/generic-checkbox';
+import { GenericCodeEditor } from '@/components/form/generic-code-editor';
+import { GenericInput } from '@/components/form/generic-input';
+import { GenericJsonEditor } from '@/components/form/generic-json-editor';
+import { GenericTextarea } from '@/components/form/generic-textarea';
+import { GenericJsonSchemaEditor } from '@/components/form/json-schema-input';
+import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
+import { Separator } from '@/components/ui/separator';
+import { Textarea } from '@/components/ui/textarea';
+import { useCopilotContext } from '@/contexts/copilot';
+import { useFullAgentFormContext } from '@/contexts/full-agent-form';
+import { useDeleteNode } from '@/hooks/use-delete-node';
+import { useProjectPermissionsQuery } from '@/lib/query/projects';
+import { isRequired } from '@/lib/utils';
+import type { FunctionToolNodeData } from '../../configuration/node-types';
+
+interface FunctionToolNodeEditorProps {
+  selectedNode: Pick<Node<FunctionToolNodeData>, 'id' | 'data'>;
+}
+
+export function FunctionToolNodeEditor({ selectedNode }: FunctionToolNodeEditorProps) {
+  const { deleteNode } = useDeleteNode(selectedNode.id);
+
+  const {
+    data: { canEdit },
+  } = useProjectPermissionsQuery();
+  const { chatFunctionsRef, openCopilot, isCopilotConfigured } = useCopilotContext();
+  const form = useFullAgentFormContext();
+  const id = selectedNode.data.toolId;
+  const functionId = useWatch({ control: form.control, name: `functionTools.${id}.functionId` });
+  const [isWriteWithAIDialogOpen, setIsWriteWithAIDialogOpen] = useState(false);
+  const [writeWithAIInstructions, setWriteWithAIInstructions] = useState('');
+  // if we remove function tool, functionId can be undefined
+  if (!functionId) {
+    return;
+  }
+
+  const path = <K extends string>(key: K) => `functionTools.${id}.${key}` as const;
+  const path$ = <K extends string>(key: K) => `functions.${functionId}.${key}` as const;
+
+  const handleWriteWithAISubmit = () => {
+    if (!chatFunctionsRef?.current) return;
+    const name = form.getValues(path('name'));
+    const baseMessage = `I want to update the code for the function tool "${name}".`;
+    const message = writeWithAIInstructions.trim()
+      ? `${baseMessage}\n\n${writeWithAIInstructions.trim()}`
+      : baseMessage;
+    openCopilot();
+    setTimeout(() => {
+      chatFunctionsRef.current?.submitMessage(message);
+    }, 100);
+    setIsWriteWithAIDialogOpen(false);
+    setWriteWithAIInstructions('');
+  };
+
+  const canWriteWithAI = isCopilotConfigured && canEdit;
+
+  return (
+    <div className="space-y-8">
+      <GenericInput
+        control={form.control}
+        name={path('name')}
+        label="Name"
+        placeholder="Enter function tool name..."
+        isRequired={isRequired(FullAgentFunctionToolSchema, 'name')}
+      />
+      <GenericTextarea
+        control={form.control}
+        name={path('description')}
+        label="Description"
+        placeholder="Enter function tool description..."
+        isRequired={isRequired(FullAgentFunctionToolSchema, 'description')}
+      />
+      <GenericCodeEditor
+        control={form.control}
+        name={path$('executeCode')}
+        label="Code"
+        placeholder={`async function execute({ param1, param2 }) {
+  // Your function logic here
+  const result = await doSomething(param1, param2);
+  return {
+    success: true,
+    data: result
+  };
+}`}
+        isRequired={isRequired(FullAgentFunctionSchema, 'executeCode')}
+        actions={
+          canWriteWithAI ? (
+            <Button
+              type="button"
+              variant="link"
+              size="sm"
+              className="text-xs h-6 gap-1"
+              onClick={() => setIsWriteWithAIDialogOpen(true)}
+            >
+              <Sparkles className="size-3.5" />
+              Write with AI
+            </Button>
+          ) : null
+        }
+        description="JavaScript function code to be executed by the tool. The function will receive arguments based on the input schema and should return a result."
+      />
+      <Dialog open={isWriteWithAIDialogOpen} onOpenChange={setIsWriteWithAIDialogOpen}>
+        <DialogContent className="max-w-2xl!">
+          <DialogHeader>
+            <DialogTitle>Write with AI</DialogTitle>
+            <DialogDescription className="sr-only">
+              Optional instructions for the copilot to update the function tool code.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="write-with-ai-instructions">Instructions (optional)</Label>
+              <Textarea
+                id="write-with-ai-instructions"
+                placeholder="e.g. use fetch to call the API and return JSON"
+                value={writeWithAIInstructions}
+                onChange={(e) => setWriteWithAIInstructions(e.target.value)}
+                className="min-h-[80px]"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsWriteWithAIDialogOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button type="button" onClick={handleWriteWithAISubmit}>
+                <Sparkles className="size-4" />
+                Open Copilot
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <GenericJsonSchemaEditor
+        control={form.control}
+        name={path$('inputSchema')}
+        label="Input Schema"
+        placeholder={`{
+  "type": "object",
+  "properties": {
+    "param1": {
+      "type": "string",
+      "description": "Description of parameter 1"
+    },
+    "param2": {
+      "type": "number",
+      "description": "Description of parameter 2"
+    }
+  },
+  "required": ["param1"]
+}`}
+        description="JSON schema defining the parameters that the function will receive. This defines the structure and validation rules for the function's input arguments."
+        isRequired={isRequired(FullAgentFunctionSchema, 'inputSchema')}
+      />
+      <GenericJsonEditor
+        control={form.control}
+        name={path$('dependencies')}
+        label="Dependencies"
+        placeholder={`{
+  "axios": "^1.6.0",
+  "lodash": "^4.17.21"
+}`}
+        description="External npm packages that the function code requires. These packages will be installed before executing the function."
+        isRequired={isRequired(FullAgentFunctionSchema, 'dependencies')}
+      />
+      <GenericCheckbox
+        control={form.control}
+        name={path('tempToolPolicies.*.needsApproval')}
+        label="Require approval"
+        description={
+          <>
+            When enabled, the agent will pause and request user approval before running this
+            function tool.{' '}
+            <a
+              href="https://localhost/visual-builder/tools/tool-approvals"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline hover:no-underline"
+            >
+              Learn more
+            </a>
+          </>
+        }
+        isRequired={isRequired(FullAgentFunctionToolSchema, 'tempToolPolicies')}
+      />
+      {canEdit && (
+        <>
+          <Separator />
+          <div className="flex justify-end">
+            <Button variant="destructive-outline" size="sm" onClick={deleteNode}>
+              <Trash2 className="size-4" />
+              Delete
+            </Button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}

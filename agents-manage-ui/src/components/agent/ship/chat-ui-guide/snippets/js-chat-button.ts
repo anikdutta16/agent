@@ -1,0 +1,14 @@
+export const jsChatButtonTemplate = `Add the chat button component to your application:
+
+\`\`\`js
+const config = {
+  baseSettings: {{BASE_SETTINGS}},
+  aiChatSettings: {
+    appId: "{{APP_ID}}",
+    baseUrl: "{{BASE_URL}}",
+{{EXTRA_AI_CHAT_SETTINGS}}
+  }
+};
+
+const chatButton = Agent Fabric.ChatButton(config);
+\`\`\``;

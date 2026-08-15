@@ -1,0 +1,308 @@
+import {
+  commonGetErrorResponses,
+  createApiError,
+  createFunctionTool,
+  deleteFunctionTool,
+  FunctionToolApiInsertSchema,
+  FunctionToolApiUpdateSchema,
+  FunctionToolListResponse,
+  FunctionToolResponse,
+  generateId,
+  getFunctionToolById,
+  listFunctionTools,
+  PaginationQueryParamsSchema,
+  TenantProjectAgentIdParamsSchema,
+  TenantProjectAgentParamsSchema,
+  updateFunctionTool,
+} from '@agent-fabric/agents-core';
+import { createProtectedRoute } from '@agent-fabric/agents-core/middleware';
+import { OpenAPIHono } from '@hono/zod-openapi';
+import { getLogger } from '../../../logger';
+import { requireProjectPermission } from '../../../middleware/projectAccess';
+import type { ManageAppVariables } from '../../../types/app';
+import {
+  type ManageRouteHandler,
+  openapiRegisterPutPatchRoutesForLegacy,
+} from '../../../utils/openapiDualRoute';
+import { speakeasyOffsetLimitPagination } from '../../../utils/speakeasy';
+
+const logger = getLogger('functionTools');
+
+const app = new OpenAPIHono<{ Variables: ManageAppVariables }>();
+
+app.openapi(
+  createProtectedRoute({
+    method: 'get',
+    path: '/',
+    summary: 'List Function Tools',
+    operationId: 'list-function-tools',
+    tags: ['Function Tools'],
+    permission: requireProjectPermission('view'),
+    request: {
+      params: TenantProjectAgentParamsSchema,
+      query: PaginationQueryParamsSchema,
+    },
+    responses: {
+      200: {
+        description: 'List of function tools retrieved successfully',
+        content: {
+          'application/json': {
+            schema: FunctionToolListResponse,
+          },
+        },
+      },
+      ...commonGetErrorResponses,
+    },
+    ...speakeasyOffsetLimitPagination,
+  }),
+  async (c) => {
+    const db = c.get('db');
+    const { tenantId, projectId, agentId } = c.req.valid('param');
+    const { page, limit } = c.req.valid('query');
+
+    try {
+      const result = await listFunctionTools(db)({
+        scopes: { tenantId, projectId, agentId },
+        pagination: { page, limit },
+      });
+
+      return c.json(result) as any;
+    } catch (error) {
+      logger.error({ error }, 'Failed to list function tools');
+      return c.json(
+        createApiError({ code: 'internal_server_error', message: 'Failed to list function tools' }),
+        500
+      );
+    }
+  }
+);
+
+app.openapi(
+  createProtectedRoute({
+    method: 'get',
+    path: '/{id}',
+    summary: 'Get Function Tool by ID',
+    operationId: 'get-function-tool',
+    tags: ['Function Tools'],
+    permission: requireProjectPermission('view'),
+    request: {
+      params: TenantProjectAgentIdParamsSchema,
+    },
+    responses: {
+      200: {
+        description: 'Function tool retrieved successfully',
+        content: {
+          'application/json': {
+            schema: FunctionToolResponse,
+          },
+        },
+      },
+      ...commonGetErrorResponses,
+    },
+  }),
+  async (c) => {
+    const db = c.get('db');
+    const { tenantId, projectId, agentId, id } = c.req.valid('param');
+
+    try {
+      const functionTool = await getFunctionToolById(db)({
+        scopes: { tenantId, projectId, agentId },
+        functionToolId: id,
+      });
+
+      if (!functionTool) {
+        return c.json(
+          createApiError({ code: 'not_found', message: 'Function tool not found' }),
+          404
+        );
+      }
+
+      return c.json({ data: functionTool }) as any;
+    } catch (error) {
+      logger.error({ error, id }, 'Failed to get function tool');
+      return c.json(
+        createApiError({ code: 'internal_server_error', message: 'Failed to get function tool' }),
+        500
+      );
+    }
+  }
+);
+
+app.openapi(
+  createProtectedRoute({
+    method: 'post',
+    path: '/',
+    summary: 'Create Function Tool',
+    operationId: 'create-function-tool',
+    tags: ['Function Tools'],
+    permission: requireProjectPermission('edit'),
+    request: {
+      params: TenantProjectAgentParamsSchema,
+      body: {
+        content: {
+          'application/json': {
+            schema: FunctionToolApiInsertSchema,
+          },
+        },
+      },
+    },
+    responses: {
+      201: {
+        description: 'Function tool created successfully',
+        content: {
+          'application/json': {
+            schema: FunctionToolResponse,
+          },
+        },
+      },
+      ...commonGetErrorResponses,
+    },
+  }),
+  async (c) => {
+    const db = c.get('db');
+    const { tenantId, projectId, agentId } = c.req.valid('param');
+    const body = c.req.valid('json');
+
+    try {
+      const id = body.id || generateId();
+
+      const functionTool = await createFunctionTool(db)({
+        scopes: { tenantId, projectId, agentId },
+        data: {
+          ...body,
+          id,
+        },
+      });
+
+      return c.json({ data: functionTool }, 201) as any;
+    } catch (error) {
+      logger.error({ error, body }, 'Failed to create function tool');
+      return c.json(
+        createApiError({
+          code: 'internal_server_error',
+          message: 'Failed to create function tool',
+        }),
+        500
+      );
+    }
+  }
+);
+
+const updateFunctionToolRouteConfig = {
+  path: '/{id}' as const,
+  summary: 'Update Function Tool',
+  tags: ['Function Tools'],
+  permission: requireProjectPermission('edit'),
+  request: {
+    params: TenantProjectAgentIdParamsSchema,
+    body: {
+      content: {
+        'application/json': {
+          schema: FunctionToolApiUpdateSchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Function tool updated successfully',
+      content: {
+        'application/json': {
+          schema: FunctionToolResponse,
+        },
+      },
+    },
+    ...commonGetErrorResponses,
+  },
+};
+
+const updateFunctionToolHandler: ManageRouteHandler<typeof updateFunctionToolRouteConfig> = async (
+  c
+) => {
+  const db = c.get('db');
+  const { tenantId, projectId, agentId, id } = c.req.valid('param');
+  const body = c.req.valid('json');
+
+  try {
+    const functionTool = await updateFunctionTool(db)({
+      scopes: { tenantId, projectId, agentId },
+      functionToolId: id,
+      data: body,
+    });
+
+    if (!functionTool) {
+      return c.json(createApiError({ code: 'not_found', message: 'Function tool not found' }), 404);
+    }
+
+    return c.json({ data: functionTool }) as any;
+  } catch (error) {
+    logger.error({ error, id, body }, 'Failed to update function tool');
+    return c.json(
+      createApiError({
+        code: 'internal_server_error',
+        message: 'Failed to update function tool',
+      }),
+      500
+    );
+  }
+};
+
+openapiRegisterPutPatchRoutesForLegacy(
+  app,
+  updateFunctionToolRouteConfig,
+  updateFunctionToolHandler,
+  {
+    operationId: 'update-function-tool',
+  }
+);
+
+app.openapi(
+  createProtectedRoute({
+    method: 'delete',
+    path: '/{id}',
+    summary: 'Delete Function Tool',
+    operationId: 'delete-function-tool',
+    tags: ['Function Tools'],
+    permission: requireProjectPermission('edit'),
+    request: {
+      params: TenantProjectAgentIdParamsSchema,
+    },
+    responses: {
+      204: {
+        description: 'Function tool deleted successfully',
+      },
+      ...commonGetErrorResponses,
+    },
+  }),
+  async (c) => {
+    const db = c.get('db');
+    const { tenantId, projectId, agentId, id } = c.req.valid('param');
+
+    try {
+      const deleted = await deleteFunctionTool(db)({
+        scopes: { tenantId, projectId, agentId },
+        functionToolId: id,
+      });
+
+      if (!deleted) {
+        return c.json(
+          createApiError({ code: 'not_found', message: 'Function tool not found' }),
+          404
+        );
+      }
+
+      return c.body(null, 204);
+    } catch (error) {
+      logger.error({ error, id }, 'Failed to delete function tool');
+      return c.json(
+        createApiError({
+          code: 'internal_server_error',
+          message: 'Failed to delete function tool',
+        }),
+        500
+      );
+    }
+  }
+);
+
+export default app;

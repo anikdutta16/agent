@@ -1,0 +1,241 @@
+'use client';
+
+import { ChevronLeft, ChevronRight, MessageSquare, Search, X } from 'lucide-react';
+import React from 'react';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group';
+import { useDerivedProp } from '@/hooks/use-derived-prop';
+import type { ConversationStats } from '@/lib/api/signoz-stats';
+import EmptyState from '../../layout/empty-state';
+import { ConversationListItem } from './conversation-list-item';
+import { LoadingSkeleton } from './loading-skeleton';
+
+interface ConversationStatsCardProps {
+  stats: ConversationStats[];
+  loading: boolean;
+  error: string | null;
+  projectId: string;
+  selectedTimeRange?: string;
+  pagination?: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+    hasNextPage: boolean;
+    hasPreviousPage: boolean;
+    nextPage: () => void;
+    previousPage: () => void;
+    goToPage: (page: number) => void;
+  };
+  searchQuery: string;
+  onSearchChange: (query: string) => void;
+  totalConversations?: number;
+}
+
+export function ConversationStatsCard({
+  stats,
+  loading,
+  error,
+  projectId,
+  selectedTimeRange,
+  pagination,
+  searchQuery: initialSearchQuery = '',
+  onSearchChange,
+  totalConversations,
+}: ConversationStatsCardProps) {
+  const [searchQuery, setSearchQuery] = useDerivedProp(initialSearchQuery);
+  const [searchError, setSearchError] = React.useState<string | null>(null);
+  const debounceTimer = React.useRef<number | null>(null);
+
+  function debouncedSearch(query: string) {
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    debounceTimer.current = window.setTimeout(() => {
+      try {
+        onSearchChange(query);
+        setSearchError(null);
+      } catch (error) {
+        console.error('Search failed:', error);
+        setSearchError('Search failed. Please try again.');
+      }
+    }, 300);
+  }
+
+  React.useEffect(() => {
+    return () => {
+      if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    };
+  }, []);
+
+  function clearSearch() {
+    setSearchQuery('');
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    try {
+      onSearchChange('');
+      setSearchError(null);
+    } catch (error) {
+      console.error('Search failed:', error);
+      setSearchError('Search failed. Please try again.');
+    }
+  }
+
+  if (error) {
+    return (
+      <Card className="shadow-none bg-background">
+        <CardContent className="flex items-center justify-center py-8">
+          <div className="text-center">
+            <MessageSquare className="h-8 w-8 text-red-500 mx-auto mb-2" />
+            <p className="text-sm text-muted-foreground">Failed to load conversation stats</p>
+            <p className="text-xs text-muted-foreground/60 mt-1">{error}</p>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="shadow-none bg-background mt-8 pb-4">
+      <CardHeader>
+        <div className="flex items-center justify-between gap-4">
+          <CardTitle className="flex font-medium items-center gap-4 text-foreground w-full">
+            <div className="flex items-center gap-2 shrink-0">
+              <MessageSquare className="h-4 w-4 text-gray-400 dark:text-white/40" />
+              Recent conversations
+            </div>
+
+            <Badge variant="count" className="text-xs">
+              {totalConversations ?? 0}
+            </Badge>
+            <div className="lg:w-md ml-auto flex flex-col gap-1">
+              <InputGroup>
+                <InputGroupInput
+                  placeholder="Search conversations..."
+                  value={searchQuery}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setSearchQuery(v);
+                    debouncedSearch(v);
+                  }}
+                  aria-invalid={!!searchError}
+                />
+                <InputGroupAddon>
+                  <Search />
+                </InputGroupAddon>
+                {searchQuery && (
+                  <InputGroupAddon align="inline-end">
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={clearSearch}
+                      aria-label="Clear search"
+                    >
+                      <X />
+                    </Button>
+                  </InputGroupAddon>
+                )}
+              </InputGroup>
+              {searchError && <p className="text-xs text-destructive">{searchError}</p>}
+            </div>
+          </CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent className="px-0">
+        {loading ? (
+          <div className="space-y-6">
+            {[...Array(3)].map((_, i) => (
+              <LoadingSkeleton key={i} />
+            ))}
+          </div>
+        ) : stats.length > 0 ? (
+          <div className="flex flex-col">
+            {stats.map((conversation) => (
+              <ConversationListItem
+                key={conversation.conversationId}
+                conversation={conversation}
+                projectId={projectId}
+              />
+            ))}
+          </div>
+        ) : (
+          <EmptyState
+            title={
+              searchQuery
+                ? 'No conversations found.'
+                : selectedTimeRange === '24h'
+                  ? 'No conversation statistics found.'
+                  : `No data for ${selectedTimeRange === '7d' ? '7 days' : selectedTimeRange === '15d' ? '15 days' : 'this time range'}.`
+            }
+            description={
+              searchQuery
+                ? `No conversations match "${searchQuery}". Try a different search term.`
+                : selectedTimeRange === '24h'
+                  ? 'Tool calls will appear here when conversations use tools.'
+                  : `Try selecting a shorter time range (like 24 hours) as data may only be retained for a few days.`
+            }
+          />
+        )}
+
+        {/* Pagination Controls */}
+        {pagination && pagination.totalPages > 1 && !initialSearchQuery && (
+          <div className="flex items-center justify-between pt-4 px-6 border-t border-border">
+            <div className="text-sm text-muted-foreground">
+              Page {pagination.page} of {pagination.totalPages}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={pagination.previousPage}
+                disabled={!pagination.hasPreviousPage}
+                className="h-8 w-8 p-0 relative"
+              >
+                <ChevronLeft className="h-4 w-4" />
+                <span className="sr-only">Previous page</span>
+              </Button>
+
+              {/* Page numbers */}
+              <div className="flex items-center gap-1">
+                {Array.from({ length: Math.min(5, pagination.totalPages) }, (_, i) => {
+                  let pageNum: number;
+                  if (pagination.totalPages <= 5) {
+                    pageNum = i + 1;
+                  } else if (pagination.page <= 3) {
+                    pageNum = i + 1;
+                  } else if (pagination.page >= pagination.totalPages - 2) {
+                    pageNum = pagination.totalPages - 4 + i;
+                  } else {
+                    pageNum = pagination.page - 2 + i;
+                  }
+
+                  return (
+                    <Button
+                      key={pageNum}
+                      variant={pageNum === pagination.page ? 'outline-primary' : 'ghost'}
+                      size="sm"
+                      onClick={() => pagination.goToPage(pageNum)}
+                      className="h-8 w-8 p-0 font-mono"
+                    >
+                      {pageNum}
+                    </Button>
+                  );
+                })}
+              </div>
+
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={pagination.nextPage}
+                disabled={!pagination.hasNextPage}
+                className="h-8 w-8 p-0 relative"
+              >
+                <ChevronRight className="h-4 w-4" />
+                <span className="sr-only">Next page</span>
+              </Button>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}

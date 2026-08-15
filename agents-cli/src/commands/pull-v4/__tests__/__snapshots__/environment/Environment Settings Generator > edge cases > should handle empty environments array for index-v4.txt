@@ -1,0 +1,3 @@
+import { createEnvironmentSettings } from '@agent-fabric/agents-sdk';
+
+export const envSettings = createEnvironmentSettings({});

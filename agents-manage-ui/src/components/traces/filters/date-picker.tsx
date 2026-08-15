@@ -1,0 +1,242 @@
+'use client';
+
+import { format } from 'date-fns';
+import { CalendarIcon, Check } from 'lucide-react';
+import { useRef, useState } from 'react';
+import type { DateRange } from 'react-day-picker';
+import type { SelectOption } from '@/components/form/generic-select';
+import { Button } from '@/components/ui/button';
+import { Calendar } from '@/components/ui/calendar';
+import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui/command';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { useDisclosure } from '@/hooks/use-disclosure';
+import { cn } from '@/lib/utils';
+import { FilterTriggerComponent } from './filter-trigger';
+
+interface DatePickerWithPresetsProps<T extends string = string> {
+  label: string;
+  value?: T | { from: string; to: string } | undefined;
+  onAdd: (value: T) => void;
+  onRemove: () => void;
+  disabled?: boolean;
+  options?: SelectOption[];
+  setCustomDateRange: (start: string, end: string) => void;
+  /**
+   * When true, shows the calendar directly without the presets menu.
+   * Uses a simpler button trigger instead of the filter chip style.
+   */
+  showCalendarDirectly?: boolean;
+  /**
+   * Placeholder text when no date is selected.
+   * Only used when showCalendarDirectly is true.
+   */
+  placeholder?: string;
+}
+
+export const CUSTOM = 'custom';
+
+/**
+ * Parse a date string (YYYY-MM-DD) as local time instead of UTC.
+ * new Date("2026-01-13") interprets as UTC midnight, which can shift days in local time.
+ * Adding T00:00:00 makes it parse as local midnight.
+ */
+function parseLocalDate(dateString: string): Date {
+  return new Date(`${dateString}T00:00:00`);
+}
+
+export function DatePickerWithPresets<T extends string = string>({
+  onAdd,
+  onRemove,
+  value,
+  options = [],
+  disabled,
+  label,
+  setCustomDateRange,
+  showCalendarDirectly = false,
+  placeholder = 'Select date range',
+}: DatePickerWithPresetsProps<T>) {
+  const [showCalendar, setShowCalendar] = useState(showCalendarDirectly);
+  const { isOpen, onClose, onOpen } = useDisclosure();
+
+  const commandRef = useRef<HTMLDivElement>(null);
+
+  const handleChangeOnOpen = (open: boolean) => {
+    if (open) {
+      onOpen();
+      if (showCalendarDirectly) {
+        setShowCalendar(true);
+      }
+    } else {
+      onClose();
+      if (showCalendarDirectly) {
+        setShowCalendar(true);
+      } else {
+        setShowCalendar(false);
+      }
+    }
+  };
+
+  const presetValue = options.find((option) => option.value === value);
+
+  // Memoize only the expensive date formatting operations
+  const dateComputations = (() => {
+    if (!value || typeof value !== 'object') {
+      return { initialDate: undefined, dateFormattedValue: undefined };
+    }
+
+    const initialDate: DateRange = {
+      from: value.from ? parseLocalDate(value.from) : undefined,
+      to: value.to ? parseLocalDate(value.to) : undefined,
+    };
+
+    const dateFormattedValue = value.from
+      ? value.to
+        ? `${format(parseLocalDate(value.from), 'LLL dd, y')} - ${format(parseLocalDate(value.to), 'LLL dd, y')}`
+        : format(parseLocalDate(value.from), 'LLL dd, y')
+      : undefined;
+
+    return { initialDate, dateFormattedValue };
+  })();
+
+  // Combine preset and date values (preset lookup is cheap, no need to memoize)
+  const initialDate = dateComputations.initialDate;
+  const formattedValue = presetValue?.value || dateComputations.dateFormattedValue;
+
+  const [date, setDate] = useState<DateRange | undefined>(initialDate);
+
+  const directTriggerLabel = dateComputations.dateFormattedValue || placeholder;
+
+  return (
+    <Popover onOpenChange={handleChangeOnOpen} open={isOpen}>
+      {showCalendarDirectly ? (
+        <PopoverTrigger asChild>
+          <Button
+            variant="gray-outline"
+            size="sm"
+            disabled={disabled}
+            className={cn(
+              !dateComputations.dateFormattedValue && 'text-muted-foreground',
+              `flex items-center gap-2 w-full justify-start focus:ring-0 max-w-full min-w-0 text-left`
+            )}
+          >
+            <CalendarIcon className="h-4 w-4 text-gray-400 dark:text-white/50" />
+            {directTriggerLabel}
+          </Button>
+        </PopoverTrigger>
+      ) : (
+        <FilterTriggerComponent
+          disabled={disabled}
+          filterLabel={label}
+          multipleCheckboxValues={formattedValue ? [formattedValue] : []}
+          onDeleteFilter={() => {
+            onRemove();
+            setDate(undefined);
+          }}
+          options={options}
+          isRemovable={false}
+        />
+      )}
+
+      <PopoverContent align="start" className="flex min-w-[250px] p-0 w-auto flex-col space-y-2">
+        {showCalendar ? (
+          <div className="flex flex-col gap-2 p-2">
+            <div className="border-b ">
+              <Calendar
+                defaultMonth={date?.from}
+                initialFocus
+                mode="range"
+                numberOfMonths={2}
+                onSelect={(val) => {
+                  setDate(val);
+                }}
+                selected={date}
+                disabled={{ after: new Date() }}
+              />
+            </div>
+            <div className="flex justify-end gap-2 py-2 px-3">
+              {showCalendarDirectly ? (
+                <Button
+                  onClick={() => {
+                    setDate(undefined);
+                    onRemove();
+                    setCustomDateRange('', '');
+                    onClose();
+                  }}
+                  size="sm"
+                  variant="ghost"
+                >
+                  Clear
+                </Button>
+              ) : (
+                <Button
+                  onClick={() => {
+                    setShowCalendar(false);
+                  }}
+                  size="sm"
+                  variant="outline"
+                >
+                  Back
+                </Button>
+              )}
+              <Button
+                onClick={() => {
+                  if (date?.from) {
+                    onAdd(CUSTOM as T);
+                    setCustomDateRange(
+                      format(date.from, 'yyyy-MM-dd'),
+                      date.to ? format(date.to, 'yyyy-MM-dd') : ''
+                    );
+                  } else {
+                    onRemove();
+                  }
+                  onClose();
+                }}
+                size="sm"
+                variant="default"
+              >
+                Apply
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <Command ref={commandRef}>
+            <CommandList
+              style={{
+                scrollbarColor: '#E4E4E7 transparent',
+                scrollbarWidth: 'thin',
+              }}
+            >
+              <CommandGroup>
+                {[...options, { label: 'Custom', value: CUSTOM }].map((option) => (
+                  <CommandItem
+                    className={cn('cursor-pointer', 'flex items-center justify-between')}
+                    key={option.value}
+                    onSelect={(value) => {
+                      if (value === CUSTOM) {
+                        setShowCalendar(true);
+                      } else {
+                        setDate(undefined);
+                        onAdd(value as T);
+                        setCustomDateRange('', '');
+                        onClose();
+                      }
+                    }}
+                    value={option.value}
+                  >
+                    {option.label}
+                    <Check
+                      className={cn(
+                        'ml-2 h-4 w-4 text-gray-400 dark:text-white/50',
+                        value === option.value ? 'opacity-100' : 'opacity-0'
+                      )}
+                    />
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}

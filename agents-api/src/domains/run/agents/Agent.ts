@@ -1,0 +1,243 @@
+import {
+  type ArtifactComponentApiInsert,
+  type CredentialStoreRegistry,
+  CredentialStuffer,
+  type FullExecutionContext,
+  type Part,
+} from '@agent-fabric/agents-core';
+import type { ToolSet } from 'ai';
+import { ArtifactReferenceSchema } from '../artifacts/artifact-component-schema';
+import { ContextResolver } from '../context';
+import { createDefaultConversationHistoryConfig } from '../data/conversations';
+import type { StreamHelper } from '../stream/stream-helpers';
+import {
+  type AgentConfig,
+  type AgentRunContext,
+  type DelegateRelation,
+  type ExternalAgentRelationConfig,
+  hasToolCallWithPrefix,
+  type PendingDurableApproval,
+  type ResolvedGenerationResponse,
+  resolveGenerationResponse,
+  type TeamAgentRelationConfig,
+  type ToolType,
+} from './agent-types';
+import { runGenerate } from './generation/generate';
+import { resolveAllowText } from './output-contract';
+import { SystemPromptBuilder } from './SystemPromptBuilder';
+import { AgentMcpManager } from './services/AgentMcpManager';
+import { getFunctionTools } from './tools/function-tools';
+import { getRelationTools } from './tools/relation-tools';
+import { getRelationshipIdForTool } from './tools/tool-utils';
+import { PromptConfig } from './versions/v1/PromptConfig';
+
+export class Agent {
+  private ctx: AgentRunContext;
+
+  constructor(
+    config: AgentConfig,
+    executionContext: FullExecutionContext,
+    credentialStoreRegistry?: CredentialStoreRegistry
+  ) {
+    const artifactComponents: ArtifactComponentApiInsert[] = config.artifactComponents || [];
+
+    let processedDataComponents = config.dataComponents || [];
+
+    const resolvedAllowText = resolveAllowText(config.outputContract);
+
+    if (processedDataComponents.length > 0 && resolvedAllowText !== false) {
+      processedDataComponents.push({
+        id: 'text-content',
+        name: 'Text',
+        description:
+          'Natural conversational text for the user - write naturally without mentioning technical details. Avoid redundancy and repetition with data components.',
+        props: {
+          type: 'object',
+          properties: {
+            text: {
+              type: 'string',
+              description:
+                'Natural conversational text - respond as if having a normal conversation, never mention JSON, components, schemas, or technical implementation. Avoid redundancy and repetition with data components.',
+            },
+          },
+          required: ['text'],
+        },
+      });
+    }
+
+    if (
+      artifactComponents.length > 0 &&
+      config.dataComponents &&
+      config.dataComponents.length > 0
+    ) {
+      processedDataComponents = [
+        ArtifactReferenceSchema.getDataComponent(config.tenantId, config.projectId),
+        ...processedDataComponents,
+      ];
+    }
+
+    const processedConfig: AgentConfig = {
+      ...config,
+      dataComponents: processedDataComponents,
+      conversationHistoryConfig:
+        config.conversationHistoryConfig || createDefaultConversationHistoryConfig(),
+    };
+
+    let contextResolver: ContextResolver | undefined;
+    let credentialStuffer: CredentialStuffer | undefined;
+
+    if (credentialStoreRegistry) {
+      contextResolver = new ContextResolver(executionContext, credentialStoreRegistry);
+      credentialStuffer = new CredentialStuffer(credentialStoreRegistry, contextResolver);
+    }
+
+    const systemPromptBuilder = new SystemPromptBuilder('v1', new PromptConfig());
+
+    const functionToolRelationshipIdByName = new Map<string, string>();
+
+    const ctx: AgentRunContext = {
+      config: processedConfig,
+      executionContext,
+      mcpManager: undefined,
+      contextResolver,
+      credentialStoreRegistry,
+      credentialStuffer,
+      systemPromptBuilder,
+      streamHelper: undefined,
+      streamRequestId: undefined,
+      conversationId: undefined,
+      delegationId: undefined,
+      isDelegatedAgent: false,
+      resolvedAllowText,
+      artifactComponents,
+      currentCompressor: null,
+      functionToolRelationshipIdByName,
+      taskDenialRedirects: [],
+      deferredToolErrors: [],
+      mcpServerSuccesses: new Set(),
+    };
+
+    ctx.mcpManager = new AgentMcpManager(
+      processedConfig,
+      executionContext,
+      credentialStuffer,
+      () => ctx.conversationId,
+      () => ctx.streamRequestId,
+      (toolName, toolType) => getRelationshipIdForTool(ctx, toolName, toolType as ToolType)
+    );
+
+    this.ctx = ctx;
+  }
+
+  get streamRequestId(): string | undefined {
+    return this.ctx.streamRequestId;
+  }
+
+  set streamRequestId(value: string | undefined) {
+    this.ctx.streamRequestId = value;
+  }
+
+  get mcpManager() {
+    return this.ctx.mcpManager;
+  }
+
+  setConversationId(conversationId: string) {
+    this.ctx.conversationId = conversationId;
+  }
+
+  setDelegationStatus(isDelegated: boolean) {
+    this.ctx.isDelegatedAgent = isDelegated;
+  }
+
+  setDelegationId(delegationId: string | undefined) {
+    this.ctx.delegationId = delegationId;
+  }
+
+  setDurableWorkflowRunId(runId: string | undefined) {
+    this.ctx.durableWorkflowRunId = runId;
+  }
+
+  setApprovedToolCalls(
+    approvedToolCalls: Record<string, { approved: boolean; reason?: string }> | undefined
+  ) {
+    this.ctx.approvedToolCalls = approvedToolCalls;
+  }
+
+  getPendingDurableApproval(): PendingDurableApproval | undefined {
+    return this.ctx.pendingDurableApproval;
+  }
+
+  getTaskDenialRedirects(): Array<{ toolName: string; toolCallId: string; reason: string }> {
+    return this.ctx.taskDenialRedirects;
+  }
+
+  getStreamingHelper(): StreamHelper | undefined {
+    return this.ctx.isDelegatedAgent ? undefined : this.ctx.streamHelper;
+  }
+
+  async getFunctionTools(sessionId?: string, streamRequestId?: string): Promise<ToolSet> {
+    return getFunctionTools(this.ctx, sessionId, streamRequestId);
+  }
+
+  get runContext(): AgentRunContext {
+    return this.ctx;
+  }
+
+  async generate(
+    userParts: Part[],
+    runtimeContext?: {
+      contextId: string;
+      metadata: {
+        conversationId: string;
+        threadId: string;
+        taskId: string;
+        streamRequestId: string;
+        apiKey?: string;
+      };
+    },
+    options?: { schemaOnlyTools?: boolean }
+  ): Promise<ResolvedGenerationResponse> {
+    return runGenerate(this.ctx, userParts, runtimeContext, options);
+  }
+
+  getRelationTools(
+    runtimeContext?: {
+      contextId: string;
+      metadata: {
+        conversationId: string;
+        threadId: string;
+        streamRequestId?: string;
+        streamBaseUrl?: string;
+        apiKey?: string;
+        baseUrl?: string;
+      };
+    },
+    sessionId?: string
+  ): Record<string, any> {
+    return getRelationTools(this.ctx, runtimeContext, sessionId);
+  }
+
+  cleanupCompression(): void {
+    if (this.ctx.currentCompressor) {
+      this.ctx.currentCompressor.fullCleanup();
+      this.ctx.currentCompressor = null;
+    }
+  }
+
+  async cleanup(): Promise<void> {
+    await this.ctx.mcpManager?.cleanup();
+    this.cleanupCompression();
+  }
+}
+
+export type {
+  AgentConfig,
+  ExternalAgentRelationConfig,
+  TeamAgentRelationConfig,
+  DelegateRelation,
+  PendingDurableApproval,
+  ToolType,
+  ResolvedGenerationResponse,
+  AgentRunContext,
+};
+export { hasToolCallWithPrefix, resolveGenerationResponse };

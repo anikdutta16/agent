@@ -1,0 +1,128 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+agent-fabric-qa-project
+# dependencies
+node_modules/
+package-lock.json
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+logs/
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+*/coverage
+coverage/
+*.lcov
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+*.db
+.setup-complete
+.blob-storage/
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+*.log
+
+# env files (can opt-in for committing if needed)
+.env
+.env.*
+!.env.example
+!.env.docker.example
+.slack-dev.json
+
+# Keep providers.yaml for Nango integrations
+!providers.yaml
+
+# Keep env.example for easy setup
+!env.example
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+local.db
+
+# Optional local dev services (cloned by pnpm setup-dev:optional)
+.optional-services/
+
+# Isolated environment state (created by scripts/isolated-env.sh)
+.isolated-envs/
+
+.ipc-hosted-tools/
+.hosted-tools/
+
+.playwright-mcp
+.vercel/
+.idea/
+agents-manage-ui/cypress/screenshots/
+agents-manage-ui/cypress/videos/
+
+.turbo/
+dist/
+.next/
+out/
+.source/
+vite.config.d.ts
+
+# Generated skill collections
+agents-docs/skills-collections/.generated/
+
+# CI-generated PR context skill (not committed)
+.claude/skills/pr-context/
+.agents/skills/pr-context/
+
+# Ship spec files (local working artifacts)
+.claude/specs/
+.claude/ship-state.json
+.claude/worktrees/
+
+# Turborepo
+.turbo
+
+# Generated workflow bundles
+agents-api/.well-known/
+
+# Workflow runtime data
+agents-api/.workflow-data/
+
+# Node compile cache
+node-compile-cache/
+
+tmp
+.claude/specs
+reports
+tasks
+prd.json
+progress.txt
+.ralph-last-branch
+# PID files from auto-started services
+.pid
+.ralph-archives/
+.claude/settings.local.json
+
+# Ideas/drafts folder
+.ideas/
+
+# Vitest image snapshots test folder
+.vitest-attachments/
+# Vitest actual snapshots
+*-actual-chromium.png
+
+.pnpm-store/
+.vercel
+
+packages/agents-ui-local
+.claude/pr-diff/
+.openknowledge/

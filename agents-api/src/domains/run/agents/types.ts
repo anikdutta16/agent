@@ -1,0 +1,70 @@
+import type {
+  Artifact,
+  ArtifactComponentApiInsert,
+  AssembleResult,
+  BreakdownComponentDef,
+  DataComponentApiInsert,
+  OutputContract,
+} from '@agent-fabric/agents-core';
+
+// Re-export for convenience
+export type { BreakdownComponentDef };
+
+export interface SkillFileData {
+  filePath: string;
+  content: string;
+}
+
+// Base interfaces for version-agnostic system prompt building
+export interface VersionConfig<TConfig> {
+  loadTemplates(): Map<string, string>;
+  assemble(templates: Map<string, string>, config: TConfig): AssembleResult;
+  /** Returns the breakdown schema defining which components this version tracks */
+  getBreakdownSchema(): BreakdownComponentDef[];
+}
+
+export interface SkillData {
+  id: string;
+  subAgentSkillId: string;
+  name: string;
+  description: string;
+  content: string;
+  metadata: Record<string, unknown> | null;
+  index: number;
+  alwaysLoaded: boolean;
+  files?: SkillFileData[];
+}
+
+export interface SystemPromptV1 {
+  corePrompt: string; // Sub-agent's own instructions — rendered into <core_instructions>
+  prompt?: string; // Overarching agent system's prompt — rendered into <agent_context>. Different source from corePrompt.
+  appPrompt?: string; // App deployment prompt — rendered into <app_context>. Supplemental to agent instructions.
+  skills?: SkillData[];
+  artifacts: Artifact[];
+  tools: ToolData[];
+  mcpServerGroups?: McpServerGroupData[];
+  dataComponents: DataComponentApiInsert[];
+  artifactComponents?: ArtifactComponentApiInsert[];
+  allProjectArtifactComponents?: ArtifactComponentApiInsert[];
+  hasAgentArtifactComponents?: boolean; // Whether any agent in the agent has artifact components
+  hasTransferRelations?: boolean; // Agent has transfer capabilities
+  hasDelegateRelations?: boolean; // Agent has delegation capabilities
+  includeDataComponents?: boolean; // Include data components in system prompt
+  hasStructuredOutput?: boolean; // Structured-generation mode (G1). Gates artifact instruction format: structured→component instructions, text→<artifact:*> tag syntax.
+  includeSinglePhaseDataComponents?: boolean; // Include data components in single-phase mode
+  outputContract?: OutputContract; // Sub-agent output contract — rendered into <output_contract> (FR12)
+  resolvedAllowText?: boolean; // Resolved allowText (outputContract.allowText ?? true)
+}
+
+export interface ToolData {
+  name: string;
+  description?: string | null;
+  inputSchema?: Record<string, unknown>; // JSON Schema format (MCP compatible)
+  usageGuidelines?: string;
+}
+
+export interface McpServerGroupData {
+  serverName: string;
+  serverInstructions?: string;
+  tools: ToolData[];
+}

@@ -1,0 +1,367 @@
+import { SESSION_EVENT_AGENT_REASONING, TRANSFER_TOOL_PREFIX } from '@agent-fabric/agents-core';
+import { getLogger } from '../../../../logger';
+import type { MidGenerationCompressor } from '../../compression/MidGenerationCompressor';
+import { reconcileToolPairs } from '../../compression/reconcileToolPairs';
+import { agentSessionManager } from '../../session/AgentSession';
+import { tracer } from '../../utils/tracer';
+import type { AgentRunContext } from '../agent-types';
+import { getMaxGenerationSteps } from './model-config';
+
+const logger = getLogger('Agent');
+
+/**
+ * Guarantee compression never returns a structurally-illegal message array (SPEC D1/D2): reconcile
+ * tool-call/tool-result pairing on every rewritten output before it leaves compression. A drop here is a
+ * signal that pairing-aware slicing (prevention) leaked and real tool results were lost.
+ *
+ * The result is never empty: both call sites prepend `originalMessages` (system + string-rendered
+ * history + user message — string content the reconciler never drops), and the summary path also appends
+ * a user message. So no empty-prompt guard is needed.
+ */
+function finalizeCompressedMessages(
+  messages: any[],
+  compressionPath: 'summary' | 'simple_fallback',
+  compressor: MidGenerationCompressor
+) {
+  const reconciled = reconcileToolPairs(messages);
+  if (reconciled.changed) {
+    // Separate id arrays keep the two sub-cases distinguishable for alerting: droppedOrphanResultIds
+    // is the data-loss signal (a computed tool result discarded), droppedDanglingCallIds is benign
+    // cleanup of a call whose result was already gone.
+    logger.warn(
+      {
+        op: 'tool_pair_repair',
+        compressionPath,
+        sessionId: compressor.sessionId,
+        conversationId: compressor.conversationId,
+        droppedDanglingCallIds: reconciled.droppedDanglingCallIds,
+        droppedOrphanResultIds: reconciled.droppedOrphanResultIds,
+        droppedMessageCount: reconciled.droppedMessageCount,
+      },
+      'Compression output had broken tool-call pairing; reconciled before returning'
+    );
+  }
+  return reconciled.messages;
+}
+
+/**
+ * Final structural guard for the prepareStep callback. Even when no compression runs, the AI SDK's
+ * accumulated stepMessages can contain a tool-call whose result was produced out-of-band (the durable
+ * executeToolStep persists the result to the DB but never threads it back into the SDK's in-memory
+ * message array), leaving an unpaired tool-call. `convertToLanguageModelPrompt` rejects that with
+ * AI_MissingToolResultsError, the turn errors, and the user sees the "having some issues" fallback even
+ * though the edit succeeded. Reconcile on every step so a structurally-illegal array never reaches the
+ * provider regardless of whether compression triggered. Returns `{}` (no override) when the array is
+ * already legal, so the healthy path is untouched.
+ */
+function reconcilePrepareStepMessages(stepMessages: any[]): { messages?: any[] } {
+  try {
+    const reconciled = reconcileToolPairs(stepMessages);
+    if (!reconciled.changed) {
+      return {};
+    }
+    logger.warn(
+      {
+        op: 'tool_pair_repair',
+        compressionPath: 'prepare_step_guard',
+        droppedDanglingCallIds: reconciled.droppedDanglingCallIds,
+        droppedOrphanResultIds: reconciled.droppedOrphanResultIds,
+        droppedMessageCount: reconciled.droppedMessageCount,
+      },
+      'prepareStep messages had broken tool-call pairing; reconciled before step'
+    );
+    return { messages: reconciled.messages };
+  } catch (error) {
+    logger.error(
+      {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      },
+      'prepareStep tool-pair reconciliation failed; continuing with original messages'
+    );
+    return {};
+  }
+}
+
+export async function handlePrepareStepCompression(
+  stepMessages: any[],
+  steps: Array<{ usage: { inputTokens?: number; outputTokens?: number } }>,
+  compressor: MidGenerationCompressor | null,
+  originalMessageCount: number
+): Promise<{ messages?: any[] }> {
+  if (!compressor) {
+    return reconcilePrepareStepMessages(stepMessages);
+  }
+
+  try {
+    const originalMessages = stepMessages.slice(0, originalMessageCount);
+    const generatedMessages = stepMessages.slice(
+      compressor.effectiveBaseline(originalMessageCount)
+    );
+
+    let compressionNeeded: boolean;
+    let totalTokens: number;
+
+    const lastStep = steps.length > 0 ? steps[steps.length - 1] : null;
+    const actualInputTokens = lastStep?.usage.inputTokens;
+    const actualOutputTokens = lastStep?.usage.outputTokens;
+    const hasReliableUsage = actualInputTokens != null && actualInputTokens > 0;
+
+    let usageSource: 'actual_sdk_usage' | 'estimated';
+
+    if (hasReliableUsage) {
+      const previousStepTokens = actualInputTokens + (actualOutputTokens ?? 0);
+      const allMessages = [...originalMessages, ...generatedMessages];
+      const estimatedCurrentTokens = compressor.calculateContextSize(allMessages);
+
+      totalTokens = Math.max(previousStepTokens, estimatedCurrentTokens);
+      compressionNeeded = compressor.isCompressionNeededFromActualUsage(totalTokens);
+      usageSource = estimatedCurrentTokens > previousStepTokens ? 'estimated' : 'actual_sdk_usage';
+    } else {
+      // No reliable usage data — fall back to estimate-based check
+      logger.warn(
+        {
+          stepCount: steps.length,
+          actualInputTokens,
+          actualOutputTokens,
+        },
+        'No reliable token usage from AI SDK, falling back to estimate-based compression check'
+      );
+      const allMessages = [...originalMessages, ...generatedMessages];
+      compressionNeeded = compressor.isCompressionNeeded(allMessages);
+      totalTokens = compressor.calculateContextSize(allMessages);
+      usageSource = 'estimated';
+    }
+
+    if (compressionNeeded) {
+      const state = compressor.getState();
+      const hardLimit = compressor.getHardLimit();
+      const { safetyBuffer } = state.config;
+      const triggerAt = hardLimit - safetyBuffer;
+
+      logger.info(
+        {
+          compressorState: state,
+          contextBreakdown: {
+            totalTokens,
+            hardLimit,
+            safetyBuffer,
+            triggerAt,
+            remaining: hardLimit - totalTokens,
+            source: usageSource,
+          },
+        },
+        'Triggering layered mid-generation compression'
+      );
+
+      if (generatedMessages.length > 0) {
+        const compressionCycle = compressor.getCompressionCycleCount();
+        let compressionResult: Awaited<ReturnType<typeof compressor.safeCompress>>;
+        try {
+          compressionResult = await compressor.safeCompress(generatedMessages, totalTokens);
+        } catch (error) {
+          logger.error(
+            {
+              error: error instanceof Error ? error.message : String(error),
+              stack: error instanceof Error ? error.stack : undefined,
+              sessionId: compressor.sessionId,
+              conversationId: compressor.conversationId,
+              messageCount: generatedMessages.length,
+              totalTokens,
+            },
+            'Mid-generation compression failed, continuing without compression'
+          );
+          return reconcilePrepareStepMessages(stepMessages);
+        }
+
+        // Record baseline only after compression succeeds so a failure doesn't corrupt the next cycle
+        compressor.markCompressed(stepMessages.length);
+
+        if (Array.isArray(compressionResult.summary)) {
+          const compressedMessages = compressionResult.summary;
+          logger.info(
+            {
+              originalTotal: stepMessages.length,
+              compressed: originalMessages.length + compressedMessages.length,
+              originalKept: originalMessages.length,
+              generatedCompressed: compressedMessages.length,
+            },
+            'Simple compression fallback applied'
+          );
+          return {
+            messages: finalizeCompressedMessages(
+              [...originalMessages, ...compressedMessages],
+              'simple_fallback',
+              compressor
+            ),
+          };
+        }
+
+        const finalMessages = [...originalMessages];
+
+        const summaryData = {
+          high_level: compressionResult.summary.high_level,
+          user_intent: compressionResult.summary.user_intent,
+          decisions: compressionResult.summary.decisions,
+          open_questions: compressionResult.summary.open_questions,
+          next_steps: compressionResult.summary.next_steps,
+          related_artifacts: compressionResult.summary.related_artifacts,
+        };
+
+        if (summaryData.related_artifacts && summaryData.related_artifacts.length > 0) {
+          summaryData.related_artifacts = summaryData.related_artifacts.map((artifact: any) => ({
+            ...artifact,
+            artifact_reference: `<artifact:ref id="${artifact.id}" tool="${artifact.tool_call_id}" />`,
+          }));
+        }
+
+        const forAgentSteps: string[] = summaryData.next_steps?.for_agent ?? [];
+        const hasNewWork = forAgentSteps.some(
+          (s: string) => !s.startsWith('STOP:') && !s.startsWith('DO NOT RE-CALL')
+        );
+
+        let stopInstruction: string;
+        if (compressionCycle >= 1) {
+          stopInstruction = `**STOP ALL TOOL CALLS.** Context has been compressed ${compressionCycle + 1} times — you are in a loop. Respond immediately with what you have found.`;
+        } else if (!hasNewWork || forAgentSteps.length === 0) {
+          stopInstruction = `**RESPOND NOW.** The next steps above indicate all relevant tool calls have already been made. Use the findings above to answer immediately.`;
+        } else {
+          stopInstruction = `**Complete only the specific new actions listed in next_steps.for_agent above, then respond.** Skip any items marked STOP or DO NOT RE-CALL — those results already exist as artifacts. Do not make any other tool calls.`;
+        }
+
+        const summaryMessage = JSON.stringify(summaryData);
+        finalMessages.push({
+          role: 'user',
+          content: `Your research has been compressed due to context limits. Here is everything you have discovered so far: ${summaryMessage}
+
+${stopInstruction} When referencing artifacts, use <artifact:ref id="artifact_id" tool="tool_call_id" /> tags with the exact IDs above.`,
+        });
+
+        logger.info(
+          {
+            originalTotal: stepMessages.length,
+            compressed: finalMessages.length,
+            originalKept: originalMessages.length,
+            generatedCompressed: generatedMessages.length,
+            injectedSummary: {
+              highLevel: compressionResult.summary.high_level,
+              nextStepsForAgent: compressionResult.summary.next_steps?.for_agent,
+              relatedArtifacts: compressionResult.summary.related_artifacts?.map((a: any) => ({
+                id: a.id,
+                name: a.name,
+                keyFindings: a.key_findings,
+              })),
+            },
+          },
+          'AI compression completed successfully'
+        );
+
+        return { messages: finalizeCompressedMessages(finalMessages, 'summary', compressor) };
+      }
+    }
+
+    return reconcilePrepareStepMessages(stepMessages);
+  } catch (error) {
+    logger.error(
+      {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        sessionId: compressor.sessionId,
+        conversationId: compressor.conversationId,
+        messageCount: stepMessages.length,
+        originalMessageCount,
+      },
+      'Compression callback failed, continuing with original messages'
+    );
+    return reconcilePrepareStepMessages(stepMessages);
+  }
+}
+
+export async function handleStopWhenConditions(
+  ctx: AgentRunContext,
+  steps: any[]
+): Promise<boolean> {
+  if (ctx.pendingDurableApproval) {
+    return true;
+  }
+
+  const last = steps.at(-1);
+  if (last && 'text' in last && last.text) {
+    try {
+      await agentSessionManager.recordEvent(
+        ctx.streamRequestId ?? '',
+        SESSION_EVENT_AGENT_REASONING,
+        ctx.config.id,
+        {
+          parts: [{ type: 'text', content: last.text }],
+        }
+      );
+    } catch (error) {
+      logger.debug({ error }, 'Failed to track agent reasoning');
+    }
+  }
+
+  if (last?.content && last.content.length > 0) {
+    const lastContent = last.content[last.content.length - 1];
+    if (lastContent.type === 'tool-error') {
+      const error = lastContent.error;
+      if (
+        error &&
+        typeof error === 'object' &&
+        'name' in error &&
+        error.name === 'connection_refused'
+      ) {
+        return true;
+      }
+    }
+  }
+
+  if (steps.length >= 1) {
+    const currentStep = steps[steps.length - 1];
+    if (currentStep && 'toolCalls' in currentStep && currentStep.toolCalls) {
+      const hasTransferTool = currentStep.toolCalls.some((tc: any) =>
+        tc.toolName.startsWith(TRANSFER_TOOL_PREFIX)
+      );
+
+      if (hasTransferTool) {
+        return true;
+      }
+    }
+  }
+
+  const maxSteps = getMaxGenerationSteps(ctx.config);
+  if (steps.length >= maxSteps) {
+    logger.warn(
+      {
+        subAgentId: ctx.config.id,
+        stepsCompleted: steps.length,
+        maxSteps,
+        conversationId: ctx.conversationId,
+      },
+      'Sub-agent reached maximum generation steps limit'
+    );
+
+    tracer.startActiveSpan(
+      'agent.max_steps_reached',
+      {
+        attributes: {
+          'agent.max_steps_reached': true,
+          'agent.steps_completed': steps.length,
+          'agent.max_steps': maxSteps,
+          'agent.id': ctx.config.agentId,
+          'subAgent.id': ctx.config.id,
+        },
+      },
+      (span) => {
+        span.addEvent('max_generation_steps_reached', {
+          message: `Sub-agent "${ctx.config.id}" reached maximum generation steps (${steps.length}/${maxSteps})`,
+        });
+        span.end();
+      }
+    );
+
+    return true;
+  }
+
+  return false;
+}

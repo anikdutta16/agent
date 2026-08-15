@@ -1,0 +1,253 @@
+import type { CacheState } from '@/constants/signoz';
+
+export type PanelType =
+  | ActivityKind
+  | 'delegation'
+  | 'transfer'
+  | 'tool_purpose'
+  | 'generic_tool'
+  | 'mcp_tool_error'
+  | 'tool_approval_requested'
+  | 'tool_approval_approved'
+  | 'tool_approval_denied'
+  | 'trigger_invocation'
+  | 'max_steps_reached'
+  | 'stream_lifetime_exceeded'
+  | 'durable_tool_execution';
+
+type MCPError = NonNullable<ConversationDetail['mcpToolErrors']>[number];
+
+export type SelectedPanel =
+  | { type: Exclude<PanelType, 'mcp_tool_error'>; item: ActivityItem }
+  | { type: 'mcp_tool_error'; item: MCPError };
+
+export const ACTIVITY_TYPES = {
+  TOOL_CALL: 'tool_call',
+  AI_GENERATION: 'ai_generation',
+  AGENT_GENERATION: 'agent_generation',
+  CONTEXT_FETCH: 'context_fetch',
+  CONTEXT_RESOLUTION: 'context_resolution',
+  USER_MESSAGE: 'user_message',
+  AI_ASSISTANT_MESSAGE: 'ai_assistant_message',
+  AI_MODEL_STREAMED_TEXT: 'ai_model_streamed_text',
+  ARTIFACT_PROCESSING: 'artifact_processing',
+  TOOL_APPROVAL_REQUESTED: 'tool_approval_requested',
+  TOOL_APPROVAL_APPROVED: 'tool_approval_approved',
+  TOOL_APPROVAL_DENIED: 'tool_approval_denied',
+  COMPRESSION: 'compression',
+  MAX_STEPS_REACHED: 'max_steps_reached',
+  STREAM_LIFETIME_EXCEEDED: 'stream_lifetime_exceeded',
+  DURABLE_TOOL_EXECUTION: 'durable_tool_execution',
+} as const;
+
+export type ActivityKind = (typeof ACTIVITY_TYPES)[keyof typeof ACTIVITY_TYPES];
+
+export const ACTIVITY_STATUS = {
+  SUCCESS: 'success',
+  ERROR: 'error',
+  PENDING: 'pending',
+  WARNING: 'warning',
+} as const;
+
+type ActivityStatus = (typeof ACTIVITY_STATUS)[keyof typeof ACTIVITY_STATUS];
+
+export interface ActivityItem {
+  id: string;
+  messageId?: string;
+  type: ActivityKind;
+  name?: string;
+  description: string;
+  timestamp: string;
+  parentSpanId?: string | null;
+  subAgentId?: string;
+  subAgentName?: string;
+  toolName?: string;
+  toolResult?: string;
+  status: ActivityStatus;
+  toolDescription?: string;
+  result?: string;
+  saveResultSaved?: boolean;
+  saveArtifactType?: string;
+  saveArtifactName?: string;
+  saveArtifactDescription?: string;
+  saveTotalArtifacts?: number;
+  saveSummaryData?: Record<string, any>;
+  saveOperationId?: string;
+  saveToolCallId?: string;
+  saveFunctionId?: string;
+  saveFacts?: string;
+  saveToolArgs?: Record<string, any>;
+  saveFullResult?: Record<string, any>;
+  aiModel?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  serviceTier?: string;
+  aiResponseContent?: string;
+  aiResponseTimestamp?: string;
+  messageContent?: string;
+  messageParts?: string; // JSON string of message parts array
+  delegationFromSubAgentId?: string;
+  delegationToSubAgentId?: string;
+  delegationType?: 'internal' | 'external' | 'team';
+  transferFromSubAgentId?: string;
+  transferToSubAgentId?: string;
+  toolType?: string;
+  toolPurpose?: string;
+  mcpServerId?: string;
+  mcpServerName?: string;
+  contextConfigId?: string;
+  contextAgentId?: string;
+  contextRequestKeys?: string[];
+  contextTrigger?: string;
+  contextStatusDescription?: string;
+  contextUrl?: string;
+  hasError?: boolean;
+  spanName?: string;
+  aiStreamTextContent?: string;
+  aiStreamTextModel?: string;
+  aiStreamTextProvider?: string;
+  aiStreamTextOperationId?: string;
+  toolCallArgs?: string;
+  toolCallResult?: string;
+  toolStatusMessage?: string;
+  costUsd?: number;
+  traceId?: string;
+  // OTEL status fields
+  otelStatusCode?: string;
+  otelStatusDescription?: string;
+  aiTelemetryFunctionId?: string;
+  aiTelemetryPhase?: string;
+  // Artifact processing fields
+  artifactId?: string;
+  artifactType?: string;
+  artifactName?: string;
+  artifactDescription?: string;
+  artifactSubAgentId?: string;
+  artifactToolCallId?: string;
+  artifactIsOversized?: boolean;
+  artifactRetrievalBlocked?: boolean;
+  artifactOriginalTokenSize?: number;
+  artifactContextWindowSize?: number;
+  // Tool approval fields
+  approvalToolName?: string;
+  approvalToolCallId?: string;
+  // Context breakdown for AI generation spans
+  contextBreakdown?: ContextBreakdown;
+  // Compression fields
+  compressionType?: string;
+  compressionGeneratedTokens?: number;
+  compressionTotalContextTokens?: number;
+  compressionTriggerAt?: number;
+  compressionOutputTokens?: number;
+  compressionRatio?: number;
+  compressionError?: string;
+  compressionSummary?: string;
+  // Trigger invocation fields
+  invocationType?: string;
+  invocationEntryPoint?: string;
+  triggerId?: string;
+  triggerInvocationId?: string;
+  maxStepsReached?: boolean;
+  stepsCompleted?: number;
+  maxSteps?: number;
+  streamCleanupReason?: string;
+  streamMaxLifetimeMs?: number;
+  streamBufferSizeBytes?: number;
+  toolCallId?: string;
+  toolResponseContent?: string;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+  cacheMarkerCount?: number;
+  cachePrefixSignature?: string;
+  cacheState?: CacheState;
+}
+
+interface ToolCall {
+  toolName: string;
+  toolType: string;
+  timestamp: string;
+  duration?: number;
+  status: ActivityStatus;
+  arguments?: any;
+  result?: any;
+  id?: string;
+  subAgentId?: string;
+  agentName?: string;
+  toolDescription?: string;
+}
+
+interface AgentInteraction {
+  subAgentId: string;
+  agentName: string;
+  timestamp: string;
+  messageCount: number;
+  toolCalls: ToolCall[];
+}
+
+/** Context breakdown showing estimated token usage by component */
+export interface ContextBreakdown {
+  /** Token counts by component key (version-specific) */
+  components: Record<string, number>;
+  /** Total estimated tokens */
+  total: number;
+}
+
+export interface ConversationDetail {
+  conversationId: string;
+  startTime: string;
+  endTime?: string;
+  duration: number;
+  totalMessages: number;
+  totalToolCalls: number;
+  totalErrors: number;
+  totalOpenAICalls: number;
+  agents: AgentInteraction[];
+  transfers: number;
+  delegations: number;
+  status: 'active' | 'completed' | 'error';
+  toolCalls?: ActivityItem[];
+  activities?: ActivityItem[];
+  conversationStartTime?: string | null;
+  conversationEndTime?: string | null;
+  conversationDuration?: number;
+  operationTime?: number;
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
+  // Time-to-first-token (seconds), interaction-grained. Null when absent (e.g. no-text turns).
+  ttftModelTokenSeconds?: number | null;
+  ttftVisibleTokenSeconds?: number | null;
+  ttftVisiblePartSeconds?: number | null;
+  traceId?: string;
+  agentId?: string;
+  agentName?: string;
+  spansWithErrorsCount?: number;
+  errorCount?: number;
+  warningCount?: number;
+  allSpanAttributes?: Array<{
+    spanId: string;
+    traceId: string;
+    timestamp: string;
+    data: Record<string, any>;
+  }>;
+  mcpToolErrors?: Array<{
+    id: string;
+    spanId: string;
+    toolName: string;
+    error: string;
+    failureReason: string;
+    timestamp: string;
+  }>;
+  invocationType?: string | null;
+  invocationEntryPoint?: string | null;
+  triggerId?: string | null;
+  triggerInvocationId?: string | null;
+  triggerRunAsUserId?: string | null;
+  triggerBatchId?: string | null;
+}
+
+export const TOOL_TYPES = {
+  TRANSFER: 'transfer',
+  DELEGATION: 'delegation',
+  MCP: 'mcp',
+  TOOL: 'tool',
+} as const;

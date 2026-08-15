@@ -1,0 +1,172 @@
+services:
+  agent-fabric-manage-ui:
+    image: agent-fabric/agents-manage-ui:0.80.4
+    environment:
+      - ENVIRONMENT
+      - LOG_LEVEL
+      - AGENT_FABRIC_AGENTS_API_URL=http://agent-fabric-api:3002
+      - PUBLIC_AGENT_FABRIC_AGENTS_API_URL=${PUBLIC_AGENT_FABRIC_AGENTS_API_URL:-http://localhost:3002}
+      - PUBLIC_NANGO_CONNECT_BASE_URL=${PUBLIC_NANGO_CONNECT_BASE_URL:-http://localhost:3051}
+      - PUBLIC_NANGO_SERVER_URL=${PUBLIC_NANGO_SERVER_URL:-http://localhost:3050}
+      - NANGO_SERVER_URL=${NANGO_SERVER_URL:-http://host.docker.internal:3050}
+      - NANGO_SECRET_KEY
+      - PUBLIC_SIGNOZ_URL=${PUBLIC_SIGNOZ_URL:-http://localhost:3080}
+      - SIGNOZ_URL=${SIGNOZ_URL:-http://host.docker.internal:3080}
+      - SIGNOZ_API_KEY
+      - PUBLIC_IS_SMTP_CONFIGURED
+      - RESEND_API_KEY
+      - SMTP_HOST
+      - SMTP_FROM_ADDRESS
+    ports:
+      - "3000:3000"
+    depends_on:
+      agent-fabric-api:
+        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  agent-fabric-api:
+    image: agent-fabric/agents-api:0.80.4
+    environment:
+      - ENVIRONMENT
+      - LOG_LEVEL
+      - AGENT_FABRIC_AGENTS_MANAGE_UI_URL=${AGENT_FABRIC_AGENTS_MANAGE_UI_URL:-http://localhost:3000}
+      - AGENT_FABRIC_AGENTS_API_URL=${AGENT_FABRIC_AGENTS_API_URL:-http://localhost:3002}
+      - AGENT_FABRIC_AGENTS_MANAGE_DATABASE_URL=postgresql://appuser:password@agent-fabric-doltgres-db:5432/agent_fabric
+      - AGENT_FABRIC_AGENTS_RUN_DATABASE_URL=postgresql://appuser:password@agent-fabric-postgres-db:5432/agent_fabric
+      - SPICEDB_ENDPOINT=agent-fabric-spicedb:50051
+      - SPICEDB_PRESHARED_KEY
+      - SPICEDB_TLS_ENABLED=${SPICEDB_TLS_ENABLED:-false}
+      - ANTHROPIC_API_KEY
+      - OPENAI_API_KEY
+      - GOOGLE_GENERATIVE_AI_API_KEY
+      - AZURE_API_KEY
+      - OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-http://host.docker.internal:14318/v1/traces}
+      - OTEL_EXPORTER_OTLP_TRACES_HEADERS
+      - NANGO_SERVER_URL=${NANGO_SERVER_URL:-http://host.docker.internal:3050}
+      - NANGO_SECRET_KEY
+      - SIGNOZ_URL=${SIGNOZ_URL:-http://host.docker.internal:3080}
+      - SIGNOZ_API_KEY
+      - AGENT_FABRIC_AGENTS_RUN_API_BYPASS_SECRET
+      - AGENT_FABRIC_AGENTS_JWT_SIGNING_SECRET
+      - AGENT_FABRIC_AGENTS_TEMP_JWT_PRIVATE_KEY
+      - AGENT_FABRIC_AGENTS_TEMP_JWT_PUBLIC_KEY
+      - RESEND_API_KEY
+      - SMTP_HOST
+      - SMTP_PORT
+      - SMTP_USER
+      - SMTP_PASSWORD
+      - SMTP_SECURE
+      - SMTP_FROM_ADDRESS
+      - SMTP_FROM_NAME
+      - SMTP_REPLY_TO
+    ports:
+      - "3002:3002"
+    depends_on:
+      agent-fabric-doltgres-db:
+        condition: service_healthy
+      agent-fabric-postgres-db:
+        condition: service_healthy
+      agent-fabric-migrate:
+        condition: service_completed_successfully
+      agent-fabric-spicedb:
+        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  agent-fabric-migrate:
+    image: agent-fabric/agents-migrate:0.80.4
+    environment:
+      - ENVIRONMENT
+      - LOG_LEVEL
+      - AGENT_FABRIC_AGENTS_MANAGE_DATABASE_URL=postgresql://appuser:password@agent-fabric-doltgres-db:5432/agent_fabric
+      - AGENT_FABRIC_AGENTS_RUN_DATABASE_URL=postgresql://appuser:password@agent-fabric-postgres-db:5432/agent_fabric
+      - SPICEDB_ENDPOINT=agent-fabric-spicedb:50051
+      - SPICEDB_PRESHARED_KEY
+      - SPICEDB_TLS_ENABLED=${SPICEDB_TLS_ENABLED:-false}
+      - AGENT_FABRIC_AGENTS_MANAGE_UI_USERNAME
+      - AGENT_FABRIC_AGENTS_MANAGE_UI_PASSWORD
+      - BETTER_AUTH_SECRET
+    depends_on:
+      agent-fabric-doltgres-db:
+        condition: service_healthy
+      agent-fabric-postgres-db:
+        condition: service_healthy
+      agent-fabric-spicedb:
+        condition: service_healthy
+    restart: "no"
+  agent-fabric-doltgres-db:
+    image: dolthub/doltgresql:0.56.7
+    restart: unless-stopped
+    environment:
+      DOLTGRES_USER: appuser
+      DOLTGRES_PASSWORD: password
+      DOLTGRES_DB: agent_fabric
+    volumes:
+      - agent-fabric-doltgres-data:/var/lib/doltgres
+    healthcheck:
+      test: ["CMD-SHELL", "PGPASSWORD=password psql -h localhost -U appuser -d agent_fabric -c 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+  agent-fabric-postgres-db:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: agent_fabric
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: password
+    volumes:
+      - agent-fabric-postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U appuser -d agent_fabric"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  # SpiceDB for authorization
+  agent-fabric-spicedb:
+    image: authzed/spicedb:v1.49.2
+    command: serve
+    restart: unless-stopped
+    environment:
+      - SPICEDB_GRPC_PRESHARED_KEY=${SPICEDB_PRESHARED_KEY:-dev-secret-key}
+      - SPICEDB_DATASTORE_ENGINE=postgres
+      - SPICEDB_DATASTORE_CONN_URI=postgres://spicedb:spicedb@agent-fabric-spicedb-postgres-db:5432/spicedb?sslmode=disable
+      - SPICEDB_HTTP_ENABLED=true
+      - SPICEDB_TELEMETRY_ENDPOINT=""
+      - SPICEDB_METRICS_ENABLED=false
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=:50051"]
+      interval: 5s
+      timeout: 30s
+      retries: 10
+    depends_on:
+      agent-fabric-spicedb-migrate:
+        condition: service_completed_successfully
+  agent-fabric-spicedb-migrate:
+    image: authzed/spicedb:v1.49.2
+    command: migrate head
+    restart: "no"
+    environment:
+      - SPICEDB_DATASTORE_ENGINE=postgres
+      - SPICEDB_DATASTORE_CONN_URI=postgres://spicedb:spicedb@agent-fabric-spicedb-postgres-db:5432/spicedb?sslmode=disable
+    depends_on:
+      agent-fabric-spicedb-postgres-db:
+        condition: service_healthy
+  agent-fabric-spicedb-postgres-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=spicedb
+      - POSTGRES_PASSWORD=spicedb
+      - POSTGRES_DB=spicedb
+    volumes:
+      - agent-fabric-spicedb-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spicedb"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+volumes:
+  agent-fabric-doltgres-data:
+  agent-fabric-postgres-data:
+  agent-fabric-spicedb-postgres-data:

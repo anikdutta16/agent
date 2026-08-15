@@ -1,0 +1,160 @@
+import type { Edge, Node } from '@xyflow/react';
+import { useEdges, useNodesData, useReactFlow } from '@xyflow/react';
+import { type LucideIcon, Workflow } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { SidePane as SidePaneLayout } from '../../layout/sidepane';
+import { edgeTypeMap } from '../configuration/edge-types';
+import { isNodeType, NodeType, newNodeDefaults, nodeTypeMap } from '../configuration/node-types';
+import EdgeEditor from './edges/edge-editor';
+import { EditorLoadingSkeleton } from './editor-loading-skeleton';
+import { Heading } from './heading';
+import { MetadataEditor } from './metadata/metadata-editor';
+import { ExternalAgentNodeEditor } from './nodes/external-agent-node-editor';
+import { ExternalAgentSelector } from './nodes/external-agent-selector/external-agent-selector';
+import { FunctionToolNodeEditor } from './nodes/function-tool-node-editor';
+import { MCPServerNodeEditor } from './nodes/mcp-node-editor';
+import { MCPSelector } from './nodes/mcp-selector/mcp-selector';
+import { SubAgentNodeEditor } from './nodes/sub-agent-node-editor';
+import { SubAgentSelector } from './nodes/sub-agent-selector/sub-agent-selector';
+import { TeamAgentNodeEditor } from './nodes/team-agent-node-editor';
+import { TeamAgentSelector } from './nodes/team-agent-selector/team-agent-selector';
+
+interface SidePaneProps {
+  selectedNodeId: string | null;
+  selectedEdgeId: string | null;
+  onClose: () => void;
+  backToAgent: () => void;
+  disabled?: boolean;
+}
+
+export function SidePane({
+  selectedNodeId,
+  selectedEdgeId,
+  onClose,
+  backToAgent,
+  disabled = false,
+}: SidePaneProps) {
+  const selectedNode = useNodesData(selectedNodeId || '');
+  const { updateNode } = useReactFlow();
+  const edges = useEdges();
+  let selectedEdge: Edge | null = null;
+  let heading = '';
+  let HeadingIcon: LucideIcon | undefined;
+
+  if (selectedNodeId) {
+    const nodeType = (selectedNode?.type as keyof typeof nodeTypeMap) || NodeType.SubAgent;
+    const nodeConfig = nodeTypeMap[nodeType];
+    heading = nodeConfig?.name || 'Node';
+    HeadingIcon = nodeConfig?.Icon;
+  } else if (selectedEdgeId) {
+    const edge = edges.find((edge) => edge.id === selectedEdgeId);
+    if (edge) selectedEdge = edge;
+    const edgeType = (selectedEdge?.type as keyof typeof edgeTypeMap) || 'default';
+    const edgeConfig = edgeTypeMap[edgeType];
+    heading = edgeConfig?.name || 'Connection';
+    HeadingIcon = edgeConfig?.Icon;
+  } else {
+    heading = 'Agent';
+    HeadingIcon = Workflow;
+  }
+  function renderContent() {
+    if (selectedNodeId && !selectedNode) {
+      return <EditorLoadingSkeleton />;
+    }
+    if (selectedEdgeId && !selectedEdge) {
+      return <EditorLoadingSkeleton />;
+    }
+
+    if (selectedNode) {
+      const nodeType = selectedNode?.type as keyof typeof nodeTypeMap;
+      switch (nodeType) {
+        case NodeType.SubAgentPlaceholder:
+          return <SubAgentSelector selectedNode={selectedNode as Node} />;
+        case NodeType.SubAgent:
+          if (!isNodeType(selectedNode, NodeType.SubAgent)) return null;
+          return <SubAgentNodeEditor selectedNode={selectedNode} />;
+        case NodeType.ExternalAgent: {
+          if (!isNodeType(selectedNode, NodeType.ExternalAgent)) return null;
+          return <ExternalAgentNodeEditor selectedNode={selectedNode} />;
+        }
+        case NodeType.ExternalAgentPlaceholder: {
+          return <ExternalAgentSelector selectedNode={selectedNode as Node} />;
+        }
+        case NodeType.TeamAgent: {
+          if (!isNodeType(selectedNode, NodeType.TeamAgent)) return null;
+          return <TeamAgentNodeEditor selectedNode={selectedNode} />;
+        }
+        case NodeType.TeamAgentPlaceholder: {
+          return <TeamAgentSelector selectedNode={selectedNode as Node} />;
+        }
+        case NodeType.MCPPlaceholder: {
+          return <MCPSelector selectedNode={selectedNode as Node} />;
+        }
+        case NodeType.MCP: {
+          if (!isNodeType(selectedNode, NodeType.MCP)) return null;
+          return <MCPServerNodeEditor selectedNode={selectedNode} />;
+        }
+        case NodeType.FunctionTool: {
+          if (!isNodeType(selectedNode, NodeType.FunctionTool)) return null;
+          return <FunctionToolNodeEditor selectedNode={selectedNode} />;
+        }
+        default:
+          return null;
+      }
+    }
+    if (selectedEdge) {
+      return <EdgeEditor selectedEdge={selectedEdge as Edge} />;
+    }
+    return <MetadataEditor />;
+  }
+
+  const nodeType = selectedNode?.type as keyof typeof nodeTypeMap | undefined;
+  const nodeConfig = nodeType ? nodeTypeMap[nodeType] : undefined;
+  const parentPlaceholder =
+    nodeConfig && 'parentPlaceholder' in nodeConfig ? nodeConfig.parentPlaceholder : undefined;
+
+  const onBackButtonClick =
+    selectedNode && parentPlaceholder
+      ? () => {
+          updateNode(selectedNode.id, {
+            type: parentPlaceholder,
+            data: newNodeDefaults[parentPlaceholder](selectedNode.id),
+          });
+        }
+      : backToAgent;
+
+  const showBackButton = selectedNode || selectedEdge;
+  const editorContentKey = selectedNodeId
+    ? `node:${selectedNodeId}`
+    : selectedEdgeId
+      ? `edge:${selectedEdgeId}`
+      : 'agent';
+
+  return (
+    <SidePaneLayout.Root>
+      <SidePaneLayout.Header>
+        <div className="flex items-center relative">
+          {showBackButton && <SidePaneLayout.BackButton onClick={onBackButtonClick} />}
+          <Heading
+            heading={heading}
+            Icon={HeadingIcon}
+            className={cn(
+              showBackButton && 'transition-all duration-300 ease-in-out group-hover:translate-x-8'
+            )}
+          />
+        </div>
+        <SidePaneLayout.CloseButton onClick={onClose} />
+      </SidePaneLayout.Header>
+      <SidePaneLayout.Content>
+        <fieldset
+          // Remount editor when selection changes to avoid a one-frame stale render from previous node/edge data.
+          key={editorContentKey}
+          disabled={disabled}
+          className="contents"
+        >
+          {renderContent()}
+        </fieldset>
+      </SidePaneLayout.Content>
+    </SidePaneLayout.Root>
+  );
+}

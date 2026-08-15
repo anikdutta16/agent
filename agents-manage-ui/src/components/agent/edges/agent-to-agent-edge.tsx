@@ -1,0 +1,140 @@
+import { BaseEdge, EdgeLabelRenderer, type EdgeProps, getBezierPath } from '@xyflow/react';
+import { ArrowRight, ArrowRightLeft } from 'lucide-react';
+import { AnimatedCircle } from '@/components/agent/edges/default-edge';
+import { cn } from '@/lib/utils';
+import type { A2AEdgeData, AnimatedEdge } from '../configuration/edge-types';
+
+interface AgentToAgentEdgeProps extends Omit<EdgeProps, 'data'> {
+  data: AnimatedEdge & A2AEdgeData;
+}
+
+const getMarker = (isSelected?: boolean) =>
+  isSelected ? 'url(#marker-selected)' : 'url(#marker-default)';
+
+export function AgentToAgentEdge({
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  data,
+  selected,
+}: AgentToAgentEdgeProps) {
+  const relationships = data.relationships || {
+    transferTargetToSource: false,
+    transferSourceToTarget: false,
+    delegateTargetToSource: false,
+    delegateSourceToTarget: false,
+  };
+
+  const hasDelegate = relationships.delegateTargetToSource || relationships.delegateSourceToTarget;
+  const hasTransfer = relationships.transferTargetToSource || relationships.transferSourceToTarget;
+
+  // Calculate offset for multiple paths
+  const calculateOffsetPath = (offset: number) => {
+    // Calculate perpendicular offset
+    const dx = targetX - sourceX;
+    const dy = targetY - sourceY;
+    const length = Math.sqrt(dx * dx + dy * dy);
+    const unitX = dx / length;
+    const unitY = dy / length;
+
+    // Perpendicular vector
+    const perpX = -unitY * offset;
+    const perpY = unitX * offset;
+
+    return getBezierPath({
+      sourceX: sourceX + perpX,
+      sourceY: sourceY + perpY,
+      targetX: targetX + perpX,
+      targetY: targetY + perpY,
+      targetPosition,
+      sourcePosition,
+    });
+  };
+
+  const [edgePath, labelX, labelY] = getBezierPath({
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+    targetPosition,
+    sourcePosition,
+  });
+
+  const hasSourceToTarget =
+    relationships.transferSourceToTarget || relationships.delegateSourceToTarget;
+  const hasTargetToSource =
+    relationships.transferTargetToSource || relationships.delegateTargetToSource;
+  const PrimaryIcon =
+    hasSourceToTarget && hasTargetToSource
+      ? ArrowRightLeft
+      : hasTransfer || hasDelegate
+        ? ArrowRight
+        : null;
+
+  // Determine markers based on relationship directions
+  const transferMarkerStart =
+    hasTransfer && relationships.transferTargetToSource ? getMarker(selected) : undefined;
+  const transferMarkerEnd =
+    hasTransfer && relationships.transferSourceToTarget ? getMarker(selected) : undefined;
+
+  const delegateMarkerStart =
+    hasDelegate && relationships.delegateTargetToSource ? getMarker(selected) : undefined;
+  const delegateMarkerEnd =
+    hasDelegate && relationships.delegateSourceToTarget ? getMarker(selected) : undefined;
+
+  const className = cn(
+    data.status && 'edge-delegating',
+    data.status === 'inverted-delegating' && 'edge-delegating-inverted'
+  );
+  return (
+    <>
+      {/* Animated circles based on delegating direction */}
+      <AnimatedCircle edgePath={edgePath} status={data.status} />
+
+      {/* Render transfer path (solid line) */}
+      {hasTransfer && (
+        <BaseEdge
+          className={className}
+          path={hasDelegate ? calculateOffsetPath(-3)[0] : edgePath}
+          style={{ strokeWidth: 2 }}
+          markerEnd={transferMarkerEnd}
+          markerStart={transferMarkerStart}
+        />
+      )}
+
+      {/* Render delegate path (dashed line) */}
+      {hasDelegate && (
+        <BaseEdge
+          className={className}
+          path={hasTransfer ? calculateOffsetPath(3)[0] : edgePath}
+          style={{
+            strokeDasharray: '5,5',
+            strokeWidth: 2,
+          }}
+          markerEnd={delegateMarkerEnd}
+          markerStart={delegateMarkerStart}
+        />
+      )}
+
+      {/* Don't render anything if there are no relationships */}
+      {PrimaryIcon && (
+        <EdgeLabelRenderer>
+          <div
+            style={{
+              position: 'absolute',
+              transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
+              pointerEvents: 'none',
+            }}
+          >
+            <div className="w-6 h-6 bg-background border rounded-full flex items-center justify-center border-border">
+              <PrimaryIcon className="w-3 h-3 text-muted-foreground" />
+            </div>
+          </div>
+        </EdgeLabelRenderer>
+      )}
+    </>
+  );
+}

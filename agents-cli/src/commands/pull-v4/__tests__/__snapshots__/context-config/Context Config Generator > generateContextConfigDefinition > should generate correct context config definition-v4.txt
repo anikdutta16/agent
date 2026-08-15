@@ -1,0 +1,8 @@
+import { contextConfig } from '@agent-fabric/agents-core';
+
+export const personalagentcontext = contextConfig({
+  headers: personalagentheaders,
+  contextVariables: {
+    user: userfetcher,
+  },
+});

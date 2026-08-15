@@ -1,0 +1,198 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.3.11/schema.json",
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    }
+  },
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    },
+    "includes": ["**", "!agents-cli/src/commands/pull-v4/__tests__/__snapshots__/**"]
+  },
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "ignoreUnknown": false,
+    "includes": [
+      "**",
+      "!packages/agents-mcp",
+      "!**/__snapshots__/*.json",
+      // The .agents/skills and .codex/skills entries under
+      // public/agents/ are real directories of per-skill symlinks back into
+      // the repo-root canonical at ../../../.agents/skills/<skill>. Without
+      // these excludes, biome traverses through the symlinks and reformats
+      // files at REPO ROOT (outside public/agents/'s scope) — including
+      // team-skills sources (e.g. .agents/skills/brand/scripts/generate-manifest.js)
+      // whose syntax is owned by upstream, not this repo. Skills are
+      // internal-only and their formatting is owned by the
+      // cross-harness-skills-sync workflow, not by biome.
+      "!.agents/skills",
+      "!.codex/skills"
+    ]
+  },
+  "linter": {
+    "enabled": true,
+    "includes": [
+      "**",
+      "!**/node_modules/**",
+      "!**/coverage/**",
+      "!**/dist/**",
+      "!**/drizzle/**",
+      "!**/drizzle.config.*",
+      "!**/.next/**",
+      "!**/build/**",
+      "!**/out/**",
+      "!**/*.css",
+      "!**/.source/**",
+      "!**/.vercel/**",
+      "!**/tsconfig.json"
+    ],
+    "rules": {
+      "recommended": true,
+      "suspicious": {
+        "noExplicitAny": "off",
+        "noArrayIndexKey": "off",
+        "noConfusingLabels": "off",
+        "useIterableCallbackReturn": "error",
+        "noDocumentCookie": "off",
+        "noAssignInExpressions": "off"
+      },
+      "complexity": {
+        "noStaticOnlyClass": "off",
+        "noBannedTypes": "off",
+        "noUselessFragments": "off",
+        "noUselessLoneBlockStatements": "off"
+      },
+      "style": {
+        "noRestrictedImports": {
+          "level": "error",
+          "options": {
+            "paths": {
+              "react": {
+                "importNames": ["useCallback", "useMemo", "memo"],
+                "message": "The highlighted React API is flagged.\nWe use the React Compiler, which automatically memoizes where needed.\nIn 99% of cases, manual memoization is unnecessary.\nIf you encounter a real issue, please ping Dima in Slack."
+              },
+              "@hono/zod-openapi": {
+                "importNames": ["createRoute"],
+                "message": "Use createProtectedRoute from @agent-fabric/agents-core/middleware instead. For intentionally public routes, use createProtectedRoute with noAuth() as the permission. If neither applies, add a biome-ignore comment explaining why."
+              }
+            },
+            "patterns": [
+              {
+                "group": "react",
+                "importNamePattern": "useContext",
+                "message": "Use the `use()` hook instead."
+              }
+            ]
+          }
+        },
+        "noUnusedTemplateLiteral": "off",
+        "noNonNullAssertion": "warn",
+        "noUselessElse": "error",
+        "useSelfClosingElements": "error",
+        "useImportType": "error"
+      },
+      "performance": {
+        "noImgElement": "warn",
+        "noDynamicNamespaceImportAccess": "off"
+      },
+      "a11y": {
+        "useSemanticElements": "off",
+        "useValidAriaRole": "error",
+        "useButtonType": "error"
+      },
+      "correctness": {
+        "noUnusedVariables": "warn",
+        "noUnusedImports": "error",
+        "useExhaustiveDependencies": {
+          "level": "error",
+          "options": {
+            "hooks": [
+              {
+                "name": "useReactFlow",
+                "stableResult": [
+                  // Based on https://github.com/xyflow/xyflow/blob/3f93f828ec931b6fba639d5a38ffd69eaca29f3a/packages/react/src/hooks/useReactFlow.ts#L67
+                  "getNodes",
+                  "getNode",
+                  "getInternalNode",
+                  "getEdges",
+                  "getEdge",
+                  "setNodes",
+                  "setEdges",
+                  "addNodes",
+                  "addEdges",
+                  "toObject",
+                  "deleteElements",
+                  "getIntersectingNodes",
+                  "isNodeIntersecting",
+                  "updateNode",
+                  "updateNodeData",
+                  "updateEdge",
+                  "updateEdgeData",
+                  "getNodesBounds",
+                  "getHandleConnections",
+                  "getNodeConnections",
+                  "fitView"
+                ]
+              },
+              { "name": "useAgentActions", "stableResult": true },
+              { "name": "useMonacoActions", "stableResult": true },
+              { "name": "useTheme", "stableResult": ["setTheme"] },
+              {
+                "name": "useCopilotContext",
+                "stableResult": ["setIsOpen", "setIsStreaming", "openCopilot", "setDynamicHeaders"]
+              },
+              {
+                "name": "useSidePane",
+                "stableResult": ["setQueryState", "openAgentPane"]
+              }
+            ]
+          }
+        },
+        "useJsxKeyInIterable": "warn",
+        "useUniqueElementIds": "off",
+        "noNestedComponentDefinitions": "off",
+        "noUnusedFunctionParameters": "error"
+      },
+      "security": {
+        "noDangerouslySetInnerHtml": "off"
+      },
+      "nursery": {
+        "useRequiredScripts": {
+          "level": "error",
+          "options": {
+            "requiredScripts": ["knip"]
+          }
+        },
+        "noReactForwardRef": "error"
+      }
+    }
+  },
+  "formatter": {
+    "includes": [
+      "**",
+      "!**/drizzle/**",
+      "!**/__snapshots__/*.json",
+      "!agents-cli/src/commands/pull-v4/__tests__/__snapshots__/**"
+    ],
+    "enabled": true,
+    "lineWidth": 100,
+    "indentStyle": "space",
+    "indentWidth": 2
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "trailingCommas": "es5",
+      "semicolons": "always",
+      "arrowParentheses": "always"
+    }
+  }
+}
