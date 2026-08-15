@@ -1,0 +1,229 @@
+'use client';
+
+import { zodResolver } from '@hookform/resolvers/zod';
+import type { ApiProvider } from '@nangohq/types';
+import { ArrowLeft, TriangleAlert } from 'lucide-react';
+import NextLink from 'next/link';
+import { useForm } from 'react-hook-form';
+import * as z from 'zod';
+import { GenericInput } from '@/components/form/generic-input';
+import { GenericTextarea } from '@/components/form/generic-textarea';
+import { ProviderIcon } from '@/components/icons/provider-icon';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
+import { Form } from '@/components/ui/form';
+import { cn } from '@/lib/utils';
+import { type FieldConfig, type FormSection, getFormConfig } from './auth-form-config';
+
+interface GenericAuthFormProps {
+  provider: ApiProvider;
+  backLink: string;
+  onSubmit: (credentials: Record<string, any>) => void;
+  onCancel?: () => void;
+  loading?: boolean;
+  className?: string;
+  mode?: 'create' | 'update';
+}
+
+/**
+ * Creates a dynamic Zod schema based on form configuration
+ */
+function createFormSchema(formConfig: NonNullable<ReturnType<typeof getFormConfig>>) {
+  const allFields = formConfig.sections.flatMap((section) => section.fields);
+  const schemaObject: Record<string, z.ZodTypeAny> = {};
+
+  for (const field of allFields) {
+    let fieldSchema: z.ZodTypeAny;
+
+    if (field.required) {
+      fieldSchema = z.string().min(1, `${field.label} is required`);
+    } else {
+      fieldSchema = z.string().optional().or(z.literal(''));
+    }
+
+    if (field.validate) {
+      fieldSchema = fieldSchema.refine(
+        (value: unknown) => {
+          const stringValue = String(value || '');
+          if (!stringValue && !field.required) return true;
+          const error = field.validate?.(stringValue);
+          return !error;
+        },
+        {
+          message: `Invalid ${field.label.toLowerCase()}`,
+        }
+      );
+    }
+
+    schemaObject[field.key] = fieldSchema;
+  }
+
+  return z.object(schemaObject);
+}
+
+export function GenericAuthForm({
+  provider,
+  backLink,
+  onSubmit,
+  onCancel,
+  loading = false,
+  className,
+  mode = 'create',
+}: GenericAuthFormProps) {
+  const formConfig = getFormConfig(provider.auth_mode);
+
+  // Move hooks before any early returns
+  const allFields = formConfig?.sections.flatMap((section) => section.fields) || [];
+
+  const FormSchema = formConfig
+    ? createFormSchema(formConfig)
+    : z.object({ _placeholder: z.string().optional() });
+
+  const defaultValues: Record<string, string> = Object.fromEntries(
+    allFields.map((field) => [field.key, ''])
+  );
+
+  const form = useForm({
+    resolver: formConfig ? zodResolver(FormSchema) : undefined,
+    defaultValues,
+  });
+
+  if (!formConfig) {
+    return (
+      <div className={cn('flex items-center gap-4 h-full', className)}>
+        <Button variant="outline" asChild>
+          <NextLink href={backLink}>
+            <ArrowLeft /> Back
+          </NextLink>
+        </Button>
+        <div>
+          <h1 className="text-2xl font-bold">Configuration Not Available</h1>
+          <p className="text-muted-foreground">
+            No configuration form is available for {provider.auth_mode} authentication mode.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const handleSubmit = form.handleSubmit((data) => {
+    // Prepare credentials object - only include non-empty values
+    const credentials: Record<string, any> = {};
+
+    for (const [key, value] of Object.entries(data)) {
+      const trimmedValue = value?.toString().trim();
+      if (trimmedValue) {
+        credentials[key] = trimmedValue;
+      }
+    }
+
+    onSubmit(credentials);
+  });
+
+  const renderField = (field: FieldConfig) => {
+    const isPrivateKey = field.key === 'private_key';
+    const label = field.label;
+
+    if (field.component === 'textarea') {
+      return (
+        <div key={field.key} className="space-y-2">
+          <GenericTextarea
+            control={form.control}
+            name={field.key}
+            label={label}
+            isRequired={field.required}
+            placeholder={field.placeholder}
+            className={isPrivateKey ? 'font-mono text-sm min-h-[120px]' : 'min-h-[80px]'}
+          />
+          {field.helpText && <p className="text-sm text-muted-foreground">{field.helpText}</p>}
+        </div>
+      );
+    }
+
+    return (
+      <div key={field.key} className="space-y-2">
+        <GenericInput
+          control={form.control}
+          name={field.key}
+          label={label}
+          isRequired={field.required}
+          type={field.type}
+          placeholder={field.placeholder}
+          disabled={loading}
+        />
+        {field.helpText && <p className="text-sm text-muted-foreground">{field.helpText}</p>}
+      </div>
+    );
+  };
+
+  const renderSection = (section: FormSection, index: number) => (
+    <div key={index} className="space-y-8">
+      {section.title && (
+        <div>
+          <h3 className="text-lg font-medium">{section.title}</h3>
+          {section.description && (
+            <p className="text-sm text-muted-foreground mt-1">{section.description}</p>
+          )}
+        </div>
+      )}
+      {section.fields.map(renderField)}
+    </div>
+  );
+
+  return (
+    <div className={cn('space-y-6', className)}>
+      <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
+          <ProviderIcon provider={provider.name} size={24} />
+          <div>
+            <h1 className="text-lg font-medium">
+              {mode === 'update' ? 'Update' : 'Setup'} {provider.display_name || provider.name}
+            </h1>
+            <p className="text-muted-foreground">
+              {mode === 'update'
+                ? 'Update the app credentials for this provider.'
+                : 'Complete the required fields to set up this credential.'}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {mode === 'update' && (
+        <Alert variant="warning">
+          <TriangleAlert className="h-4 w-4" />
+          <AlertDescription>
+            Updating the Client ID or Client Secret will invalidate token refreshes for all existing
+            connections using this OAuth app. Affected users will need to re-authenticate.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      <Form {...form}>
+        <form onSubmit={handleSubmit} className="space-y-8">
+          {formConfig.sections.map(renderSection)}
+
+          <div className="flex gap-3">
+            <Button type="submit" disabled={loading}>
+              {loading
+                ? mode === 'update'
+                  ? 'Updating...'
+                  : 'Creating Credential...'
+                : mode === 'update'
+                  ? 'Update Credentials'
+                  : 'Create Credential'}
+            </Button>
+            {onCancel ? (
+              <Button type="button" variant="outline" onClick={onCancel} disabled={loading}>
+                Cancel
+              </Button>
+            ) : (
+              <Button type="button" variant="outline" asChild disabled={loading}>
+                <NextLink href={backLink}>Cancel</NextLink>
+              </Button>
+            )}
+          </div>
+        </form>
+      </Form>
+    </div>
+  );
+}

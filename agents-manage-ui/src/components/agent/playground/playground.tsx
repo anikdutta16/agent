@@ -1,0 +1,239 @@
+import { zodResolver } from '@hookform/resolvers/zod';
+import { Bug, X } from 'lucide-react';
+import { useParams } from 'next/navigation';
+import { type Dispatch, useEffect, useState } from 'react';
+import { useForm, useWatch } from 'react-hook-form';
+import { toast } from 'sonner';
+import { z } from 'zod';
+import { TimelineWrapper } from '@/components/traces/timeline/timeline-wrapper';
+import { Button } from '@/components/ui/button';
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
+import { useCopilotContext } from '@/contexts/copilot';
+import { useFullAgentFormContext } from '@/contexts/full-agent-form';
+import { useAgentActions, useAgentStore } from '@/features/agent/state/use-agent-store';
+import { useChatActivitiesPolling } from '@/hooks/use-chat-activities-polling';
+import {
+  copyFullTraceToClipboard,
+  copySummarizedTraceToClipboard,
+} from '@/lib/utils/trace-formatter';
+import { createCustomHeadersSchema } from '@/lib/validation';
+import { ChatWidget } from './chat-widget';
+import { CustomHeadersDialog } from './custom-headers-dialog';
+
+interface PlaygroundProps {
+  setShowPlayground: (show: boolean) => void;
+  closeSidePane: () => void;
+  showTraces: boolean;
+  setShowTraces: Dispatch<boolean>;
+}
+
+export const Playground = ({
+  closeSidePane,
+  setShowPlayground,
+  showTraces,
+  setShowTraces,
+}: PlaygroundProps) => {
+  const { tenantId, projectId, agentId } = useParams<{
+    tenantId: string;
+    projectId: string;
+    agentId: string;
+  }>();
+  const { setIsOpen: setIsCopilotOpen } = useCopilotContext();
+  const { resetPlaygroundConversationId } = useAgentActions();
+  const conversationId = useAgentStore(({ playgroundConversationId }) => playgroundConversationId);
+  const [customHeaders, setCustomHeaders] = useState<Record<string, string> | undefined>(undefined);
+  const fullAgentForm = useFullAgentFormContext();
+  const headersSchemaString = useWatch({
+    control: fullAgentForm.control,
+    name: 'contextConfig.headersSchema',
+  });
+  const [isCustomHeadersModalOpen, setIsCustomHeadersModalOpen] = useState(false);
+
+  useEffect(() => {
+    // when the playground is closed the chat widget is unmounted so we need to reset the conversation id
+    return () => resetPlaygroundConversationId();
+  }, []);
+
+  const headersTemplate = (() => {
+    if (!headersSchemaString) return undefined;
+    try {
+      const schema = JSON.parse(headersSchemaString);
+      const properties = schema?.properties as Record<string, unknown> | undefined;
+      if (!properties) return undefined;
+      const template = Object.fromEntries(Object.keys(properties).map((key) => [key, '']));
+      return JSON.stringify(template, null, 2);
+    } catch {
+      return undefined;
+    }
+  })();
+
+  const resolver = zodResolver(
+    z.strictObject({
+      headers: createCustomHeadersSchema(headersSchemaString),
+    })
+  );
+
+  const form = useForm({
+    defaultValues: {
+      headers: '',
+    },
+    resolver,
+    mode: 'onChange',
+  });
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: validate on mount
+  useEffect(() => {
+    form.trigger().then(() => {
+      const state = form.getFieldState('headers');
+      if (!state.invalid) return;
+      setIsCustomHeadersModalOpen(true);
+    });
+  }, []);
+
+  const [isCopying, setIsCopying] = useState(false);
+  const {
+    chatActivities,
+    isPolling,
+    error,
+    startPolling,
+    stopPolling,
+    retryConnection,
+    refreshOnce,
+  } = useChatActivitiesPolling({
+    conversationId,
+    tenantId,
+    projectId,
+  });
+
+  const handleCopyFullTrace = async () => {
+    if (!chatActivities) return;
+
+    setIsCopying(true);
+    try {
+      const result = await copyFullTraceToClipboard(chatActivities, tenantId, projectId);
+      if (result.success) {
+        toast.success('Full trace copied to clipboard', {
+          description: 'The complete OTEL trace has been copied successfully.',
+        });
+      } else {
+        toast.error('Failed to copy trace', {
+          description: result.error || 'An unknown error occurred',
+        });
+      }
+    } catch (err) {
+      toast.error('Failed to copy trace', {
+        description: err instanceof Error ? err.message : 'An unknown error occurred',
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    setIsCopying(false);
+  };
+
+  const handleCopySummarizedTrace = async () => {
+    if (!chatActivities) return;
+
+    setIsCopying(true);
+    try {
+      const result = await copySummarizedTraceToClipboard(chatActivities, tenantId, projectId);
+      if (result.success) {
+        toast.success('Summarized trace copied to clipboard', {
+          description: 'The activity timeline has been copied successfully.',
+        });
+      } else {
+        toast.error('Failed to copy trace', {
+          description: result.error || 'An unknown error occurred',
+        });
+      }
+    } catch (err) {
+      toast.error('Failed to copy trace', {
+        description: err instanceof Error ? err.message : 'An unknown error occurred',
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    setIsCopying(false);
+  };
+
+  const hasHeadersError = !!form.formState.errors.headers?.message;
+
+  return (
+    <div className="bg-background flex flex-col h-full">
+      <div className="flex min-h-0 items-center justify-between py-2 px-4 border-b shrink-0">
+        <CustomHeadersDialog
+          customHeaders={customHeaders}
+          setCustomHeaders={setCustomHeaders}
+          form={form}
+          isOpen={isCustomHeadersModalOpen}
+          setIsOpen={setIsCustomHeadersModalOpen}
+          headersTemplate={headersTemplate}
+        />
+        <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6"
+            onClick={() => {
+              setShowTraces(!showTraces);
+              if (!showTraces) {
+                closeSidePane();
+                setIsCopilotOpen(false);
+              }
+            }}
+          >
+            <Bug className="h-4 w-4" />
+            {showTraces ? 'Hide debug' : 'Debug'}
+          </Button>
+          {!showTraces && (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="h-6"
+              onClick={() => setShowPlayground(false)}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          )}
+        </div>
+      </div>
+      <div className="flex-1 min-h-0 w-full">
+        <ResizablePanelGroup direction="horizontal">
+          <ResizablePanel order={1}>
+            <ChatWidget
+              conversationId={conversationId}
+              resetPlaygroundConversationId={resetPlaygroundConversationId}
+              startPolling={startPolling}
+              stopPolling={stopPolling}
+              agentId={agentId}
+              projectId={projectId}
+              tenantId={tenantId}
+              customHeaders={customHeaders}
+              chatActivities={chatActivities}
+              setShowTraces={setShowTraces}
+              hasHeadersError={hasHeadersError}
+            />
+          </ResizablePanel>
+
+          {showTraces && (
+            <>
+              <ResizableHandle />
+              <TimelineWrapper
+                isPolling={isPolling}
+                conversation={chatActivities}
+                enableAutoScroll
+                error={error}
+                retryConnection={retryConnection}
+                refreshOnce={refreshOnce}
+                showConversationTracesLink
+                conversationId={conversationId}
+                tenantId={tenantId}
+                projectId={projectId}
+                onCopyFullTrace={handleCopyFullTrace}
+                onCopySummarizedTrace={handleCopySummarizedTrace}
+                isCopying={isCopying}
+              />
+            </>
+          )}
+        </ResizablePanelGroup>
+      </div>
+    </div>
+  );
+};

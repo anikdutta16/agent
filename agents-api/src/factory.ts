@@ -1,0 +1,70 @@
+import type { CredentialStore, ServerConfig } from '@agent-fabric/agents-core';
+import { CredentialStoreRegistry, createDefaultCredentialStores } from '@agent-fabric/agents-core';
+import type {
+  EmailServiceConfig,
+  SSOProviderConfig,
+  UserAuthConfig,
+} from '@agent-fabric/agents-core/auth';
+import { createAuth } from '@agent-fabric/agents-core/auth';
+import { createAgentsHono } from './createApp';
+import manageDbPool from './data/db/manageDbPool';
+import runDbClient from './data/db/runDbClient';
+import { env } from './env';
+import { scheduleEnsurePlaygroundAppConfig } from './startup/playground-app';
+import type { SandboxConfig } from './types';
+
+export type { UserAuthConfig, SSOProviderConfig };
+
+const defaultConfig: ServerConfig = {
+  port: 3002,
+  serverOptions: {
+    requestTimeout: 120000,
+    keepAliveTimeout: 60000,
+    keepAlive: true,
+  },
+};
+
+export function createAgentsAuth(
+  userAuthConfig?: UserAuthConfig,
+  emailService?: EmailServiceConfig
+): ReturnType<typeof createAuth> {
+  return createAuth({
+    baseURL: env.AGENT_FABRIC_AGENTS_API_URL || `http://localhost:3002`,
+    secret: env.BETTER_AUTH_SECRET || 'development-secret-change-in-production',
+    dbClient: runDbClient,
+    manageDbPool,
+    ...(env.AUTH_COOKIE_DOMAIN && { cookieDomain: env.AUTH_COOKIE_DOMAIN }),
+    ...(userAuthConfig?.socialProviders && { socialProviders: userAuthConfig.socialProviders }),
+    ...(emailService && { emailService }),
+    ...(env.AGENT_FABRIC_RECAPTCHA_SECRET_KEY && {
+      recaptcha: {
+        secretKey: env.AGENT_FABRIC_RECAPTCHA_SECRET_KEY,
+        minScore: env.AGENT_FABRIC_RECAPTCHA_MIN_SCORE,
+      },
+    }),
+  });
+}
+
+export function createAgentsApp(config?: {
+  serverConfig?: ServerConfig;
+  credentialStores?: CredentialStore[];
+  auth?: UserAuthConfig;
+  sandboxConfig?: SandboxConfig;
+  emailService?: EmailServiceConfig;
+}) {
+  scheduleEnsurePlaygroundAppConfig();
+
+  const serverConfig = config?.serverConfig ?? defaultConfig;
+  const stores = config?.credentialStores ?? createDefaultCredentialStores();
+  const registry = new CredentialStoreRegistry(stores);
+  const auth = createAgentsAuth(config?.auth, config?.emailService);
+
+  return createAgentsHono({
+    serverConfig,
+    credentialStores: registry,
+    auth,
+    sandboxConfig: config?.sandboxConfig,
+  });
+}
+
+export { createAgentsHono };

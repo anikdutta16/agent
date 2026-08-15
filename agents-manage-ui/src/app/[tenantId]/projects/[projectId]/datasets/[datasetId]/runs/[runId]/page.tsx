@@ -1,0 +1,593 @@
+'use client';
+
+import {
+  ArrowLeft,
+  ChevronRight,
+  Clock,
+  Download,
+  ExternalLink,
+  Loader2,
+  RefreshCw,
+  Sparkles,
+} from 'lucide-react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { use, useEffect, useState } from 'react';
+import { DatasetItemViewDialog } from '@/components/dataset-items/dataset-item-view-dialog';
+import {
+  TestCaseFilters,
+  type TestCaseFilters as TestCaseFiltersType,
+} from '@/components/datasets/test-case-filters';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Progress } from '@/components/ui/progress';
+import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { useRerunDatasetRun } from '@/hooks/use-rerun-dataset-run';
+import type { DatasetRunInvocation, DatasetRunWithConversations } from '@/lib/api/dataset-runs';
+import { fetchDatasetRun, fetchDatasetRunItems } from '@/lib/api/dataset-runs';
+import { fetchEvaluationResultsPaginated } from '@/lib/api/evaluation-results';
+import { downloadCsv } from '@/lib/csv/export-csv';
+import { useProjectPermissionsQuery } from '@/lib/query/projects';
+import { formatDateAgo, formatDateTime } from '@/lib/utils/format-date';
+
+function extractInputText(
+  input: { messages: Array<{ role: string; content: unknown }> } | null | undefined
+): string {
+  if (!input || !('messages' in input)) return '';
+  const messages = input.messages;
+  if (!Array.isArray(messages) || messages.length === 0) return '';
+  const content = messages[0]?.content;
+  if (typeof content === 'string') return content;
+  if (typeof content === 'object' && content !== null && 'text' in content) {
+    const text = (content as { text?: unknown }).text;
+    if (typeof text === 'string') return text;
+  }
+  return '';
+}
+
+export default function Page({
+  params,
+}: PageProps<'/[tenantId]/projects/[projectId]/datasets/[datasetId]/runs/[runId]'>) {
+  const { tenantId, projectId, datasetId, runId } = use(params);
+  const router = useRouter();
+  const [run, setRun] = useState<DatasetRunWithConversations | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [filters, setFilters] = useState<TestCaseFiltersType>({});
+  const [invocations, setInvocations] = useState<DatasetRunInvocation[]>([]);
+  const {
+    data: { canEdit },
+  } = useProjectPermissionsQuery();
+  const { rerun, isRerunning, canRerun } = useRerunDatasetRun({
+    tenantId,
+    projectId,
+    datasetId,
+    onSuccess: ({ datasetRunId }) => {
+      router.push(`/${tenantId}/projects/${projectId}/datasets/${datasetId}/runs/${datasetRunId}`);
+    },
+  });
+  const [evaluationProgress, setEvaluationProgress] = useState<{
+    total: number;
+    completed: number;
+    isRunning: boolean;
+  } | null>(null);
+
+  async function loadRun(showLoading = true) {
+    try {
+      if (showLoading) {
+        setLoading(true);
+      }
+      setError(null);
+      const [response, itemsResponse] = await Promise.all([
+        fetchDatasetRun(tenantId, projectId, runId),
+        fetchDatasetRunItems(tenantId, projectId, runId),
+      ]);
+      setRun(response.data);
+      setInvocations(itemsResponse.data || []);
+
+      // If there's an evaluation job, fetch evaluation progress
+      if (response.data?.evaluationJobConfigId) {
+        try {
+          const evalResponse = await fetchEvaluationResultsPaginated(
+            tenantId,
+            projectId,
+            'job-config',
+            response.data.evaluationJobConfigId
+          );
+
+          const totalEvaluations = evalResponse.pagination.total;
+          const completedEvaluations = evalResponse.pagination.completedCount ?? 0;
+
+          setEvaluationProgress({
+            total: totalEvaluations,
+            completed: completedEvaluations,
+            isRunning: completedEvaluations < totalEvaluations && totalEvaluations > 0,
+          });
+        } catch (evalErr) {
+          console.error('Error fetching evaluation progress:', evalErr);
+          setEvaluationProgress(null);
+        }
+      } else {
+        setEvaluationProgress(null);
+      }
+    } catch (err) {
+      console.error('Error loading dataset run:', err);
+      setError(err instanceof Error ? err.message : 'Failed to load run');
+    }
+    if (showLoading) {
+      setLoading(false);
+    }
+  }
+
+  const conversationProgress = (() => {
+    if (invocations.length === 0) return { total: 0, completed: 0, failed: 0, isRunning: false };
+    const total = invocations.length;
+    const completed = invocations.filter((inv) => inv.status === 'completed').length;
+    const failed = invocations.filter(
+      (inv) => inv.status === 'failed' || inv.status === 'cancelled'
+    ).length;
+    const settled = completed + failed;
+    return { total, completed, failed, isRunning: settled < total && total > 0 };
+  })();
+
+  // Overall progress - run is complete only when both conversations AND evaluations are done
+  const isRunInProgress =
+    conversationProgress.isRunning || (evaluationProgress?.isRunning ?? false);
+
+  // Initial load
+  useEffect(() => {
+    loadRun();
+  }, [
+    // biome-ignore lint/correctness/useExhaustiveDependencies: false positive, variable is stable and optimized by the React Compiler
+    loadRun,
+  ]);
+
+  // Auto-refresh when run is in progress
+  useEffect(() => {
+    if (!isRunInProgress) return;
+
+    const interval = setInterval(() => {
+      loadRun(false); // Don't show loading state for refresh
+    }, 3000); // Refresh every 3 seconds
+
+    return () => clearInterval(interval);
+  }, [
+    isRunInProgress,
+    // biome-ignore lint/correctness/useExhaustiveDependencies: false positive, variable is stable and optimized by the React Compiler
+    loadRun,
+  ]);
+
+  const invocationByItemId = new Map<string, DatasetRunInvocation>();
+  for (const inv of invocations) {
+    if (inv.datasetItemId) {
+      invocationByItemId.set(inv.datasetItemId, inv);
+    }
+  }
+
+  const uniqueAgents = (() => {
+    if (!run?.items) return [];
+    const agentIds = new Set<string>();
+    run.items.forEach((item) => {
+      item.conversations?.forEach((conv) => {
+        if (conv.agentId) {
+          agentIds.add(conv.agentId);
+        }
+      });
+    });
+    return Array.from(agentIds).map((id) => ({ id, name: id }));
+  })();
+
+  const filteredItems =
+    run?.items
+      .map((item) => {
+        const inputText = extractInputText(item.input).toLowerCase();
+
+        if (filters.searchInput && !inputText.includes(filters.searchInput.toLowerCase())) {
+          return null;
+        }
+
+        let conversations = item.conversations || [];
+
+        if (filters.agentId) {
+          conversations = conversations.filter((conv) => conv.agentId === filters.agentId);
+        }
+
+        if (filters.outputStatus && filters.outputStatus !== 'all') {
+          if (filters.outputStatus === 'has_output') {
+            conversations = conversations.filter((conv) => conv.output);
+          } else if (filters.outputStatus === 'no_output') {
+            conversations = conversations.filter((conv) => !conv.output);
+          }
+        }
+
+        if (conversations.length === 0 && (filters.agentId || filters.outputStatus)) {
+          return null;
+        }
+
+        return {
+          ...item,
+          conversations,
+        };
+      })
+      .filter((item) => item !== null) ?? [];
+
+  function handleExportCsv() {
+    const rows = filteredItems.flatMap((item) => {
+      const inputText = extractInputText(item.input);
+      const conversations = item.conversations || [];
+
+      if (conversations.length === 0) {
+        const inv = invocationByItemId.get(item.id);
+        return [
+          {
+            input: inputText || 'No input',
+            agent: '',
+            output:
+              inv?.status === 'failed' || inv?.status === 'cancelled' ? 'Failed' : 'No output',
+            run_at: formatDateTime(inv?.createdAt ?? run?.createdAt ?? '', { local: true }),
+            conversation_id: '',
+            status: inv?.status || '',
+          },
+        ];
+      }
+
+      return conversations.map((conversation) => ({
+        input: inputText || 'No input',
+        agent: conversation.agentId || '',
+        output: conversation.output || 'No output',
+        run_at: formatDateTime(conversation.createdAt, { local: true }),
+        conversation_id: conversation.conversationId,
+        status: 'completed',
+      }));
+    });
+
+    downloadCsv(rows, `test-suite-run-${runId.slice(0, 8)}.csv`);
+  }
+
+  if (loading) {
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-10 w-48" />
+        <Card>
+          <CardHeader>
+            <Skeleton className="h-6 w-32" />
+            <Skeleton className="h-4 w-24 mt-2" />
+          </CardHeader>
+        </Card>
+      </div>
+    );
+  }
+
+  if (error || !run) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Error</CardTitle>
+          <CardDescription>{error || 'Run not found'}</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between gap-4">
+        <Link href={`/${tenantId}/projects/${projectId}/datasets/${datasetId}?tab=runs`}>
+          <Button variant="ghost" size="sm">
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            Back to test suite
+          </Button>
+        </Link>
+        {(() => {
+          const target = { runId, datasetRunConfigId: run.datasetRunConfigId };
+          const rerunning = isRerunning(runId);
+          const eligible = canRerun(target) && canEdit;
+          return (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!eligible || rerunning}
+              title={
+                eligible
+                  ? 'Rerun using current dataset items'
+                  : 'This run was not created from a run config and cannot be rerun'
+              }
+              onClick={() => void rerun(target)}
+            >
+              {rerunning ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-2 h-4 w-4" />
+              )}
+              Rerun
+            </Button>
+          );
+        })()}
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{run.runConfigName || `Run ${run.id.slice(0, 8)}`}</CardTitle>
+          <CardDescription className="flex items-center gap-2 mt-1">
+            <Clock className="h-3 w-3" />
+            Created {formatDateAgo(run.createdAt, { local: true })}
+          </CardDescription>
+          {isRunInProgress && (
+            <div className="mt-4 flex flex-col gap-3 p-3 rounded-lg bg-muted/50 border">
+              <div className="flex items-center gap-3">
+                <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                <span className="text-sm font-medium">Run in progress</span>
+              </div>
+
+              {/* Conversation progress */}
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-muted-foreground">
+                  Test cases: {conversationProgress.completed} of {conversationProgress.total}{' '}
+                  completed
+                  {conversationProgress.failed > 0 && (
+                    <span className="ml-1 text-red-600 dark:text-red-400">
+                      ({conversationProgress.failed} failed)
+                    </span>
+                  )}
+                  {!conversationProgress.isRunning && conversationProgress.total > 0 && (
+                    <span className="ml-2 text-green-600 dark:text-green-400">✓</span>
+                  )}
+                </span>
+                <Progress
+                  value={conversationProgress.completed + conversationProgress.failed}
+                  max={conversationProgress.total}
+                  className="h-1.5"
+                />
+              </div>
+
+              {/* Evaluation progress (if evaluators are attached) */}
+              {evaluationProgress && (
+                <div className="flex flex-col gap-1">
+                  <span className="text-xs text-muted-foreground">
+                    Evaluations: {evaluationProgress.completed} of {evaluationProgress.total}{' '}
+                    completed
+                    {!evaluationProgress.isRunning && evaluationProgress.total > 0 && (
+                      <span className="ml-2 text-green-600 dark:text-green-400">✓</span>
+                    )}
+                  </span>
+                  <Progress
+                    value={evaluationProgress.completed}
+                    max={evaluationProgress.total}
+                    className="h-1.5"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+          {!isRunInProgress && conversationProgress.total > 0 && (
+            <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
+              {conversationProgress.failed > 0 ? (
+                <>
+                  <span className="text-yellow-600 dark:text-yellow-400">⚠</span>
+                  Run finished: {conversationProgress.completed} completed,{' '}
+                  {conversationProgress.failed} failed
+                </>
+              ) : (
+                <>
+                  <span className="text-green-600 dark:text-green-400">✓</span>
+                  Run completed: {conversationProgress.completed} test cases
+                </>
+              )}
+              {evaluationProgress && `, ${evaluationProgress.completed} evaluations`}
+            </div>
+          )}
+          {run.evaluationJobConfigId && (
+            <div className="mt-4">
+              <Link
+                href={`/${tenantId}/projects/${projectId}/evaluations/jobs/${run.evaluationJobConfigId}`}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <Button variant="outline" size="sm" className="w-full sm:w-auto">
+                  <Sparkles className="mr-2 h-4 w-4" />
+                  View Evaluation Job
+                  <ExternalLink className="ml-2 h-3 w-3" />
+                </Button>
+              </Link>
+            </div>
+          )}
+        </CardHeader>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>
+                Test Cases (
+                {filteredItems.reduce((acc, item) => acc + (item.conversations?.length || 0), 0)}{' '}
+                {filteredItems.length !== (run.items?.length || 0) && (
+                  <span className="text-muted-foreground">
+                    of{' '}
+                    {run.items?.reduce((acc, item) => acc + (item.conversations?.length || 0), 0) ||
+                      0}
+                  </span>
+                )}
+                )
+              </CardTitle>
+              <CardDescription>Test cases executed in this test suite run</CardDescription>
+            </div>
+            {filteredItems.length > 0 && (
+              <Button variant="outline" size="sm" onClick={handleExportCsv}>
+                <Download className="mr-2 h-4 w-4" />
+                Export CSV
+              </Button>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <TestCaseFilters filters={filters} onFiltersChange={setFilters} agents={uniqueAgents} />
+          {!run.items || run.items.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No items found</p>
+          ) : filteredItems.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-8">
+              No test cases match the current filters.
+            </p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Input</TableHead>
+                  <TableHead>Agent</TableHead>
+                  <TableHead>Output</TableHead>
+                  <TableHead>Run At</TableHead>
+                  <TableHead>Conversation ID</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredItems.flatMap((item) => {
+                  const rawText = extractInputText(item.input);
+                  const inputPreview = rawText
+                    ? rawText.length > 100
+                      ? `${rawText.slice(0, 100)}...`
+                      : rawText
+                    : 'No input';
+
+                  // Show all conversations for this item (one row per agent run)
+                  const conversations = item.conversations || [];
+                  if (conversations.length === 0) {
+                    const inv = invocationByItemId.get(item.id);
+                    const isFailed = inv?.status === 'failed' || inv?.status === 'cancelled';
+                    const isPending = inv?.status === 'pending';
+                    const isRunning = inv?.status === 'running';
+
+                    return (
+                      <TableRow
+                        key={item.id}
+                        className={isFailed ? 'bg-red-50 dark:bg-red-950/20' : ''}
+                      >
+                        <TableCell>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedItemId(item.id)}
+                            className="flex items-center gap-2 text-sm text-blue-600 dark:text-blue-400 hover:underline text-left max-w-md truncate"
+                          >
+                            <span className="truncate">{inputPreview}</span>
+                            <ChevronRight className="h-4 w-4 flex-shrink-0" />
+                          </button>
+                        </TableCell>
+                        <TableCell>
+                          <span className="text-sm text-muted-foreground">-</span>
+                        </TableCell>
+                        <TableCell>
+                          {isFailed ? (
+                            <span className="text-sm text-red-600 dark:text-red-400 font-medium">
+                              Failed
+                            </span>
+                          ) : isRunning ? (
+                            <span className="flex items-center gap-2 text-sm text-muted-foreground">
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                              Processing...
+                            </span>
+                          ) : isPending ? (
+                            <span className="text-sm text-muted-foreground">Pending...</span>
+                          ) : (
+                            <span className="text-sm text-muted-foreground">No output</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <span className="text-sm text-muted-foreground">
+                            {isPending
+                              ? 'Pending...'
+                              : formatDateTime(inv?.startedAt ?? inv?.createdAt ?? run.createdAt, {
+                                  local: true,
+                                })}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          {isFailed ? (
+                            <span className="text-sm text-red-600 dark:text-red-400">
+                              Execution failed
+                            </span>
+                          ) : isPending || isRunning ? (
+                            <span className="text-sm text-muted-foreground">Pending...</span>
+                          ) : (
+                            <span className="text-sm text-muted-foreground">No conversation</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  }
+
+                  return conversations.map((conversation) => (
+                    <TableRow key={`${item.id}-${conversation.conversationId}`}>
+                      <TableCell>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedItemId(item.id)}
+                          className="flex items-center gap-2 text-sm text-blue-600 dark:text-blue-400 hover:underline text-left max-w-md truncate"
+                        >
+                          <span className="truncate">{inputPreview}</span>
+                          <ChevronRight className="h-4 w-4 flex-shrink-0" />
+                        </button>
+                      </TableCell>
+                      <TableCell>
+                        <code className="text-xs font-mono text-muted-foreground">
+                          {conversation.agentId || '-'}
+                        </code>
+                      </TableCell>
+                      <TableCell>
+                        <span className="text-sm text-muted-foreground max-w-md truncate block">
+                          {conversation.output
+                            ? conversation.output.length > 100
+                              ? `${conversation.output.slice(0, 100)}...`
+                              : conversation.output
+                            : 'No output'}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <span className="text-sm">
+                          {formatDateTime(conversation.createdAt, { local: true })}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <Link
+                          href={`/${tenantId}/projects/${projectId}/traces/conversations/${conversation.conversationId}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="flex items-center gap-2 text-sm text-blue-600 dark:text-blue-400 hover:underline"
+                        >
+                          <code className="font-mono">{conversation.conversationId}</code>
+                          <ExternalLink className="h-4 w-4" />
+                        </Link>
+                      </TableCell>
+                    </TableRow>
+                  ));
+                })}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      {selectedItemId &&
+        run.items &&
+        (() => {
+          const selectedItem = run.items.find((item) => item.id === selectedItemId);
+          if (!selectedItem) return null;
+          return (
+            <DatasetItemViewDialog
+              item={selectedItem}
+              isOpen={selectedItemId !== null}
+              onOpenChange={(open) => !open && setSelectedItemId(null)}
+            />
+          );
+        })()}
+    </div>
+  );
+}

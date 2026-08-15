@@ -1,0 +1,62 @@
+version: 2
+updates:
+  - package-ecosystem: 'docker-compose'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+    # Supply-chain cooldown: hold version-update PRs until a release is >= 3 days
+    # old (security updates bypass). Mirrors the package-manager minimumReleaseAge.
+    cooldown:
+      default-days: 3
+    ignore:
+      - dependency-name: '*'
+        update-types:
+          - 'version-update:semver-major'
+    groups:
+      docker-compose:
+        patterns:
+          - '*'
+
+  - package-ecosystem: 'docker-compose'
+    directory: '/create-agents-template'
+    schedule:
+      interval: 'weekly'
+    cooldown:
+      default-days: 3
+    ignore:
+      - dependency-name: '*'
+        update-types:
+          - 'version-update:semver-major'
+    groups:
+      docker-compose:
+        patterns:
+          - '*'
+
+  - package-ecosystem: 'npm'
+    directories:
+      - '/create-agents-template/**'
+    schedule:
+      interval: 'daily'
+    versioning-strategy: increase
+    allow:
+      - dependency-name: '@agent-fabric/agents-*'
+    groups:
+      agent-fabric:
+        patterns:
+          - '@agent-fabric/agents-*'
+
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'daily'
+    cooldown:
+      default-days: 3
+    groups:
+      high-frequency:
+        patterns:
+          - 'pullfrog/*'
+      github-actions:
+        patterns:
+          - '*'
+        exclude-patterns:
+          - 'pullfrog/*'

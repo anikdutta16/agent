@@ -1,0 +1,126 @@
+'use client';
+
+import { Check, ChevronsUpDown, X } from 'lucide-react';
+import { useState } from 'react';
+import type { Control, FieldPath, FieldValues } from 'react-hook-form';
+import { Button } from '@/components/ui/button';
+import { ButtonGroup } from '@/components/ui/button-group';
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
+import { FormControl } from '@/components/ui/form';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { cn } from '@/lib/utils';
+import { FormFieldWrapper } from './form-field-wrapper';
+import type { SelectOption } from './generic-select';
+
+interface GenericComboBoxProps<FV extends FieldValues, TV = FieldValues> {
+  control: Control<FV, unknown, TV>;
+  name: FieldPath<FV>;
+  label: string;
+  options: SelectOption[];
+  searchPlaceholder?: string;
+  placeholder?: string;
+  description?: React.ReactNode;
+  disabled?: boolean;
+  isRequired?: boolean;
+  clearable?: boolean;
+}
+
+export function GenericComboBox<
+  TFieldValues extends FieldValues,
+  TTransformedValues extends FieldValues,
+>({
+  control,
+  name,
+  label,
+  options,
+  searchPlaceholder = 'Search...',
+  placeholder,
+  description,
+  disabled = false,
+  isRequired = false,
+  clearable = false,
+}: GenericComboBoxProps<TFieldValues, TTransformedValues>) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <FormFieldWrapper
+      control={control}
+      name={name}
+      label={label}
+      description={description}
+      isRequired={isRequired}
+    >
+      {(field) => (
+        <Popover open={open} onOpenChange={setOpen}>
+          <ButtonGroup className="w-full">
+            <FormControl>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  role="combobox"
+                  aria-expanded={open}
+                  className="flex-1 justify-between font-normal"
+                  disabled={disabled}
+                >
+                  {field.value ? (
+                    options.find((option) => option.value === field.value)?.label
+                  ) : (
+                    <div className="text-muted-foreground">{placeholder}</div>
+                  )}
+                  <ChevronsUpDown className="opacity-50 text-muted-foreground" />
+                </Button>
+              </PopoverTrigger>
+            </FormControl>
+            {clearable && field.value && (
+              <Button
+                variant="outline"
+                size="icon"
+                type="button"
+                aria-label="Clear selection"
+                onClick={() => field.onChange('')}
+              >
+                <X />
+              </Button>
+            )}
+          </ButtonGroup>
+          <PopoverContent className="p-0 w-(--radix-popover-trigger-width) ">
+            <Command>
+              <CommandInput placeholder={searchPlaceholder} className="h-9" />
+              <CommandList>
+                <CommandEmpty>No options found.</CommandEmpty>
+                <CommandGroup>
+                  {options.map((option) => (
+                    <CommandItem
+                      key={option.value}
+                      value={option.value}
+                      disabled={option.disabled}
+                      onSelect={(currentValue) => {
+                        field.onChange(currentValue === field.value ? '' : currentValue);
+                        setOpen(false);
+                      }}
+                    >
+                      {option.label}
+                      <Check
+                        className={cn(
+                          'ml-auto',
+                          field.value === option.value ? 'opacity-100' : 'opacity-0'
+                        )}
+                      />
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </CommandList>
+            </Command>
+          </PopoverContent>
+        </Popover>
+      )}
+    </FormFieldWrapper>
+  );
+}

@@ -1,0 +1,13 @@
+workflowVersion: 1.0.0
+speakeasyVersion: latest
+sources:
+    Agent Fabric API:
+        inputs:
+            - location: https://api.localhost/openapi.json
+        output: .speakeasy/out.openapi.yaml
+        registry:
+            location: registry.speakeasyapi.dev/agent-fabric/agent-fabric/agent-fabric-api
+targets:
+    agent-fabric:
+        target: mcp-typescript
+        source: Agent Fabric API

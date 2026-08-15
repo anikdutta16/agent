@@ -1,0 +1,227 @@
+import { useEffect, useRef, useState } from 'react';
+import type { ConversationDetail } from '@/components/traces/timeline/types';
+import { throwError } from '@/lib/utils';
+
+interface UseChatActivitiesPollingOptions {
+  conversationId: string;
+  tenantId: string;
+  projectId: string;
+  pollingInterval?: number; // in milliseconds, defaults to 1000
+}
+
+interface UseChatActivitiesPollingReturn {
+  chatActivities: ConversationDetail | null;
+  isPolling: boolean;
+  error: string | null;
+  startPolling: () => void;
+  stopPolling: () => void;
+  retryConnection: () => void;
+  refreshOnce: () => Promise<{ hasNewActivity: boolean }>;
+}
+
+export const useChatActivitiesPolling = ({
+  conversationId,
+  tenantId,
+  projectId,
+  pollingInterval = 1000,
+}: UseChatActivitiesPollingOptions): UseChatActivitiesPollingReturn => {
+  const [chatActivities, setChatActivities] = useState<ConversationDetail | null>(null);
+  const [isPolling, setIsPolling] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const lastActivityCount = useRef(0);
+
+  const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isComponentMountedRef = useRef(true);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const wasPollingBeforeHiddenRef = useRef(false);
+
+  async function fetchChatActivities(): Promise<ConversationDetail | null> {
+    try {
+      setError(null);
+
+      abortControllerRef.current = new AbortController();
+      const currentConversationId = conversationId; // Capture current ID
+
+      const response = await fetch(
+        `/api/traces/conversations/${currentConversationId}?tenantId=${tenantId}&projectId=${projectId}`,
+        {
+          signal: abortControllerRef.current.signal,
+        }
+      );
+
+      if (!response.ok) {
+        // If conversation doesn't exist yet, that's fine - just return
+        if (response.status === 404) {
+          return null;
+        }
+
+        // Try to get the actual error message from the response
+        let errorMessage = 'Failed to fetch chat activities';
+        try {
+          const errorData = await response.json();
+          if (errorData.error) {
+            errorMessage = errorData.error;
+          }
+        } catch {
+          // If we can't parse the error response, use the default message
+        }
+
+        throwError(errorMessage);
+      }
+
+      const data: ConversationDetail = await response.json();
+
+      if (isComponentMountedRef.current && currentConversationId === conversationId) {
+        // Only update state if data actually changed (by checking activity count)
+        const newCount = data.activities?.length || 0;
+        if (newCount !== lastActivityCount.current) {
+          setChatActivities(data);
+          lastActivityCount.current = newCount;
+        }
+      }
+
+      return data;
+    } catch (err) {
+      // Don't log abort errors as they are expected when cancelling requests
+      if (err instanceof Error && err.name === 'AbortError') {
+        return null;
+      }
+
+      if (isComponentMountedRef.current) {
+        setError(err instanceof Error ? err.message : 'An error occurred');
+        // Stop polling on error to prevent repeated failed requests
+        setIsPolling(false);
+        if (pollingIntervalRef.current) {
+          clearInterval(pollingIntervalRef.current);
+          pollingIntervalRef.current = null;
+        }
+        // Cancel any pending requests
+        if (abortControllerRef.current) {
+          abortControllerRef.current.abort();
+          abortControllerRef.current = null;
+        }
+      }
+      throw err;
+    }
+  }
+
+  // Start polling
+  function startPolling() {
+    if (pollingIntervalRef.current) return; // Already polling
+
+    setIsPolling(true);
+
+    // Initial fetch
+    fetchChatActivities().catch(() => {
+      // Error handling is already done in fetchChatActivities
+    });
+
+    // Set up polling interval
+    pollingIntervalRef.current = setInterval(() => {
+      fetchChatActivities().catch(() => {
+        // Error handling is already done in fetchChatActivities
+      });
+    }, pollingInterval);
+  }
+
+  // Stop polling
+  function stopPolling() {
+    setIsPolling(false);
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+    // Cancel any pending requests
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+  }
+
+  // Retry connection - clears error and restarts polling
+  function retryConnection() {
+    setError(null);
+    stopPolling();
+    startPolling();
+  }
+
+  // Refresh once - makes a single request without starting polling
+  async function refreshOnce(): Promise<{
+    hasNewActivity: boolean;
+  }> {
+    const currentCount = chatActivities?.activities?.length || 0;
+    const data = await fetchChatActivities();
+    const newCount = data?.activities?.length || 0;
+    return { hasNewActivity: newCount > currentCount };
+  }
+
+  // Pause polling when the tab is hidden to avoid flooding SigNoz with
+  // requests while the user isn't looking at the page.
+  useEffect(() => {
+    function handleVisibilityChange() {
+      if (document.hidden) {
+        if (pollingIntervalRef.current) {
+          wasPollingBeforeHiddenRef.current = true;
+          stopPolling();
+        }
+      } else if (wasPollingBeforeHiddenRef.current) {
+        wasPollingBeforeHiddenRef.current = false;
+        startPolling();
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [
+    // biome-ignore lint/correctness/useExhaustiveDependencies: stable refs, optimized by the React Compiler
+    startPolling,
+    // biome-ignore lint/correctness/useExhaustiveDependencies: stable refs, optimized by the React Compiler
+    stopPolling,
+  ]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    isComponentMountedRef.current = true;
+    return () => {
+      isComponentMountedRef.current = false;
+      stopPolling();
+    };
+  }, [
+    // biome-ignore lint/correctness/useExhaustiveDependencies: false positive, variable is stable and optimized by the React Compiler
+    stopPolling,
+  ]);
+
+  // Reset chat activities and stop polling when conversationId changes
+  const prevConversationIdRef = useRef(conversationId);
+  useEffect(() => {
+    if (prevConversationIdRef.current !== conversationId) {
+      setChatActivities(null);
+      lastActivityCount.current = 0;
+      setError(null);
+
+      // Stop polling for old conversation
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+      setIsPolling(false);
+      wasPollingBeforeHiddenRef.current = false;
+
+      prevConversationIdRef.current = conversationId;
+    }
+  });
+
+  return {
+    chatActivities,
+    isPolling,
+    error,
+    startPolling,
+    stopPolling,
+    retryConnection,
+    refreshOnce,
+  };
+};

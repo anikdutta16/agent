@@ -1,0 +1,290 @@
+{
+  "name": "@agent-fabric/agents-core",
+  "version": "0.80.6",
+  "description": "Agents Core contains the database schema, types, and validation schemas for Agent Fabric, along with core components.",
+  "type": "module",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./db/manage-schema": {
+      "types": "./dist/db/manage/manage-schema.d.ts",
+      "import": "./dist/db/manage/manage-schema.js"
+    },
+    "./db/run-schema": {
+      "types": "./dist/db/runtime/runtime-schema.d.ts",
+      "import": "./dist/db/runtime/runtime-schema.js"
+    },
+    "./db/manage-client": {
+      "types": "./dist/db/manage/manage-client.d.ts",
+      "import": "./dist/db/manage/manage-client.js"
+    },
+    "./db/test-manage-client": {
+      "types": "./dist/db/manage/test-manage-client.d.ts",
+      "import": "./dist/db/manage/test-manage-client.js"
+    },
+    "./db/test-runtime-client": {
+      "types": "./dist/db/runtime/test-runtime-client.d.ts",
+      "import": "./dist/db/runtime/test-runtime-client.js"
+    },
+    "./db/run-client": {
+      "types": "./dist/db/runtime/runtime-client.d.ts",
+      "import": "./dist/db/runtime/runtime-client.js"
+    },
+    "./types": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/types/index.js"
+    },
+    "./validation": {
+      "types": "./dist/validation/index.d.ts",
+      "import": "./dist/validation/index.js"
+    },
+    "./auth/auth-types": {
+      "types": "./dist/auth/auth-types.d.ts",
+      "import": "./dist/auth/auth-types.js"
+    },
+    "./client-exports": {
+      "types": "./dist/client-exports.d.ts",
+      "import": "./dist/client-exports.js"
+    },
+    "./evaluation": {
+      "types": "./dist/evaluation/index.d.ts",
+      "import": "./dist/evaluation/index.js"
+    },
+    "./constants/models": {
+      "types": "./dist/constants/models.d.ts",
+      "import": "./dist/constants/models.js"
+    },
+    "./constants/schema-validation": {
+      "types": "./dist/constants/schema-validation/index.d.ts",
+      "import": "./dist/constants/schema-validation/index.js"
+    },
+    "./constants/allowed-file-formats": {
+      "types": "./dist/constants/allowed-file-formats.d.ts",
+      "import": "./dist/constants/allowed-file-formats.js"
+    },
+    "./external-fetch": {
+      "types": "./dist/external-fetch/index.d.ts",
+      "import": "./dist/external-fetch/index.js"
+    },
+    "./text-attachments": {
+      "types": "./dist/text-attachments/index.d.ts",
+      "import": "./dist/text-attachments/index.js"
+    },
+    "./credential-stores": {
+      "types": "./dist/credential-stores/index.d.ts",
+      "import": "./dist/credential-stores/index.js"
+    },
+    "./db/test-client": {
+      "types": "./dist/db/test-client.d.ts",
+      "import": "./dist/db/test-client.js"
+    },
+    "./utils/env-detection": {
+      "types": "./dist/utils/env-detection.d.ts",
+      "import": "./dist/utils/env-detection.js"
+    },
+    "./utils/schema-conversion": {
+      "types": "./dist/utils/schema-conversion.d.ts",
+      "import": "./dist/utils/schema-conversion.js"
+    },
+    "./utils/json-schema-walk": {
+      "types": "./dist/utils/json-schema-walk.d.ts",
+      "import": "./dist/utils/json-schema-walk.js"
+    },
+    "./utils/retry": {
+      "types": "./dist/utils/retry-client.d.ts",
+      "import": "./dist/utils/retry-client.js"
+    },
+    "./utils/signature-validation": {
+      "types": "./dist/utils/signature-validation.d.ts",
+      "import": "./dist/utils/signature-validation.js"
+    },
+    "./auth": {
+      "types": "./dist/auth/auth.d.ts",
+      "import": "./dist/auth/auth.js"
+    },
+    "./auth/cookie-names": {
+      "types": "./dist/auth/cookie-names.d.ts",
+      "import": "./dist/auth/cookie-names.js"
+    },
+    "./auth/schema": {
+      "types": "./dist/auth/auth-schema.d.ts",
+      "import": "./dist/auth/auth-schema.js"
+    },
+    "./auth/validation": {
+      "types": "./dist/auth/auth-validation-schemas.d.ts",
+      "import": "./dist/auth/auth-validation-schemas.js"
+    },
+    "./auth/permissions": {
+      "types": "./dist/auth/permissions.d.ts",
+      "import": "./dist/auth/permissions.js"
+    },
+    "./auth/authz": {
+      "types": "./dist/auth/authz/index.d.ts",
+      "import": "./dist/auth/authz/index.js"
+    },
+    "./auth/password-policy": {
+      "types": "./dist/auth/password-policy.d.ts",
+      "import": "./dist/auth/password-policy.js"
+    },
+    "./auth/password-policy-rules": {
+      "types": "./dist/auth/password-policy-rules.d.ts",
+      "import": "./dist/auth/password-policy-rules.js"
+    },
+    "./auth/password-reset-link-store": {
+      "types": "./dist/auth/password-reset-link-store.d.ts",
+      "import": "./dist/auth/password-reset-link-store.js"
+    },
+    "./middleware": {
+      "types": "./dist/middleware/index.d.ts",
+      "import": "./dist/middleware/index.js"
+    },
+    "./setup": {
+      "types": "./dist/setup/index.d.ts",
+      "import": "./dist/setup/index.js"
+    },
+    "./test-utils": {
+      "types": "./dist/test-utils/index.d.ts",
+      "import": "./dist/test-utils/index.js"
+    },
+    "./drizzle": "./drizzle/",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "knip": "knip --directory ../.. --workspace packages/agents-core --config packages/agents-core/knip.config.ts --dependencies",
+    "build": "tsdown",
+    "dev": "pnpm build --watch",
+    "test": "vitest --run",
+    "test:integration": "vitest --run --config vitest.integration.config.ts src/__tests__/integration/",
+    "test:llm": "vitest --run --config vitest.llm.config.ts",
+    "test:coverage": "vitest --run --coverage",
+    "test:watch": "vitest --watch",
+    "lint": "biome lint --error-on-warnings",
+    "lint:fix": "biome check --write src",
+    "format": "biome format --write src",
+    "format:check": "biome format src",
+    "typecheck": "tsc --noEmit",
+    "typecheck:watch": "tsc --noEmit --watch",
+    "db:generate": "pnpm db:manage:generate && pnpm db:run:generate",
+    "db:migrate": "pnpm db:manage:migrate && pnpm db:run:migrate",
+    "db:drop": "pnpm db:manage:drop && pnpm db:run:drop",
+    "db:clean": "tsx src/db/clean.ts",
+    "db:delete": "tsx src/db/delete.ts",
+    "db:reset": "pnpm db:delete && pnpm db:migrate",
+    "db:studio": "echo 'Use db:manage:studio or db:run:studio'",
+    "db:check": "pnpm db:manage:check && pnpm db:run:check",
+    "db:manage:generate": "drizzle-kit generate --config=drizzle.manage.config.ts",
+    "db:manage:backfill-skill-files": "tsx scripts/backfill-skill-files.ts",
+    "db:manage:migrate": "tsx src/dolt/migrate-dolt.ts",
+    "db:manage:run-backfill-all-branches": "tsx scripts/run-manage-backfill-on-all-branches.ts",
+    "db:manage:sync-all-branches": "tsx src/dolt/migrate-all-branches.ts",
+    "db:manage:drop": "drizzle-kit drop --config=drizzle.manage.config.ts",
+    "db:manage:studio": "drizzle-kit studio --config=drizzle.manage.config.ts",
+    "db:manage:check": "drizzle-kit check --config=drizzle.manage.config.ts",
+    "db:run:generate": "drizzle-kit generate --config=drizzle.run.config.ts",
+    "db:run:migrate": "drizzle-kit migrate --config=drizzle.run.config.ts",
+    "db:run:drop": "drizzle-kit drop --config=drizzle.run.config.ts",
+    "db:run:studio": "drizzle-kit studio --config=drizzle.run.config.ts",
+    "db:run:check": "drizzle-kit check --config=drizzle.run.config.ts",
+    "db:auth:init": "tsx src/auth/init.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "3.0.7",
+    "@ai-sdk/azure": "^3.0.4",
+    "@ai-sdk/gateway": "3.0.120",
+    "@ai-sdk/google": "3.0.4",
+    "@ai-sdk/openai": "3.0.7",
+    "@ai-sdk/openai-compatible": "2.0.4",
+    "@ai-sdk/provider": "3.0.2",
+    "@authzed/authzed-node": "^1.6.1",
+    "@babel/parser": "^7.28.6",
+    "@better-auth/infra": "catalog:",
+    "@better-auth/oauth-provider": "catalog:",
+    "@better-auth/sso": "catalog:",
+    "@composio/core": "^0.2.4",
+    "@electric-sql/pglite": "^0.3.13",
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@nangohq/node": "^0.69.41",
+    "@nangohq/types": "^0.69.41",
+    "@openrouter/ai-sdk-provider": "^2.1.0",
+    "@opentelemetry/api": "^1.9.0",
+    "@vercel/functions": "^3.5.1",
+    "ai": "6.0.191",
+    "ajv": "^8.18.0",
+    "altcha-lib": "^1.4.1",
+    "better-auth": "catalog:",
+    "cron-parser": "^5.5.0",
+    "destr": "^2.0.3",
+    "dotenv": "^17.2.1",
+    "dotenv-expand": "^12.0.3",
+    "drizzle-orm": "^0.44.4",
+    "drizzle-zod": "^0.8.2",
+    "exit-hook": "^4.0.0",
+    "file-type": "^21.3.1",
+    "find-up": "^7.0.0",
+    "hono": "^4.12.7",
+    "ipaddr.js": "^2.3.0",
+    "iwanthue": "^2.0.0",
+    "jmespath": "^0.16.0",
+    "jose": "^6.1.0",
+    "nanoid": "^5.0.9",
+    "pg": "^8.16.3",
+    "pino": "^9.11.0",
+    "pino-pretty": "^13.1.1",
+    "postgres": "^3.4.8",
+    "simplematter": "^1.0.1",
+    "traverse": "^0.6.10",
+    "ts-pattern": "^5.7.1",
+    "undici": "^7.25.0",
+    "yaml": "^2.8.2"
+  },
+  "peerDependencies": {
+    "@hono/zod-openapi": "^1.1.5",
+    "zod": "^4.3.6"
+  },
+  "optionalDependencies": {
+    "@napi-rs/keyring": "^1.2.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.75.0",
+    "@opentelemetry/baggage-span-processor": "^0.4.0",
+    "@opentelemetry/exporter-jaeger": "^2.0.1",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.217.0",
+    "@opentelemetry/sdk-metrics": "^2.0.1",
+    "@opentelemetry/sdk-node": "^0.217.0",
+    "@opentelemetry/sdk-trace-node": "^2.0.1",
+    "@opentelemetry/semantic-conventions": "^1.34.0"
+  },
+  "devDependencies": {
+    "@types/jmespath": "^0.15.2",
+    "@types/node": "^20.11.24",
+    "@types/pg": "^8.15.6",
+    "@types/traverse": "^0.6.37",
+    "@vitest/coverage-v8": "^3.2.4",
+    "drizzle-kit": "^0.31.6",
+    "tsx": "^4.19.2",
+    "typescript": "^6.0.2",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "files": [
+    "dist",
+    "drizzle",
+    "spicedb",
+    "README.md",
+    "LICENSE.md",
+    "SUPPLEMENTAL_TERMS.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agent-fabric/agents.git",
+    "directory": "packages/agents-core"
+  }
+}

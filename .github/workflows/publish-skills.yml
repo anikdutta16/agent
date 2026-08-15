@@ -1,0 +1,49 @@
+name: Publish Skills
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'agents-docs/content/**'
+      - 'agents-docs/_snippets/**'
+      - 'agents-docs/skills-collections/_templates/**'
+      - 'agents-docs/scripts/generate-skill-collections.ts'
+      - 'agents-docs/skills-collections/README.md'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout agents repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+        with:
+          version: 10.33.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Generate skill collections
+        working-directory: agents-docs
+        run: pnpm generate-skill-collections
+
+      - name: Push to skills repo
+        uses: cpina/github-action-push-to-another-repository@55306faa4ed53b815ae49e564af8cfb359d32ae2 # main
+        env:
+          SSH_DEPLOY_KEY: ${{ secrets.SKILLS_DEPLOY_KEY }}
+        with:
+          source-directory: 'agents-docs/skills-collections/.generated'
+          destination-github-username: 'agent-fabric'
+          destination-repository-name: 'skills'
+          user-email: 'support@agent-fabric.local'
+          target-branch: main
+          commit-message: 'chore: update skills from agents repo (${{ github.sha }})'

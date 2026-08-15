@@ -1,0 +1,1291 @@
+# @agent-fabric/agents-work-apps
+
+## 0.80.6
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.80.6
+
+## 0.80.5
+
+### Patch Changes
+
+- Updated dependencies [bf54e9e]
+- Updated dependencies [f160b29]
+  - @agent-fabric/agents-core@0.80.5
+
+## 0.80.4
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.80.4
+
+## 0.80.3
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.80.3
+
+## 0.80.2
+
+### Patch Changes
+
+- Updated dependencies [ac3476b]
+  - @agent-fabric/agents-core@0.80.2
+
+## 0.80.1
+
+### Patch Changes
+
+- Updated dependencies [d94d837]
+  - @agent-fabric/agents-core@0.80.1
+
+## 0.80.0
+
+### Patch Changes
+
+- Updated dependencies [35000b5]
+- Updated dependencies [d667b35]
+- Updated dependencies [1ca58a3]
+- Updated dependencies [11f7dad]
+- Updated dependencies [c228447]
+  - @agent-fabric/agents-core@0.80.0
+
+## 0.79.1
+
+### Patch Changes
+
+- Updated dependencies [1f02799]
+  - @agent-fabric/agents-core@0.79.1
+
+## 0.79.0
+
+### Patch Changes
+
+- Updated dependencies [62616af]
+- Updated dependencies [62616af]
+- Updated dependencies [356084b]
+  - @agent-fabric/agents-core@0.79.0
+
+## 0.78.5
+
+### Patch Changes
+
+- Updated dependencies [78594e9]
+  - @agent-fabric/agents-core@0.78.5
+
+## 0.78.4
+
+### Patch Changes
+
+- Updated dependencies [292842b]
+- Updated dependencies [4f78f6d]
+- Updated dependencies [673f4c6]
+  - @agent-fabric/agents-core@0.78.4
+
+## 0.78.3
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.78.3
+
+## 0.78.2
+
+### Patch Changes
+
+- Updated dependencies [4dde32b]
+- Updated dependencies [49fdcac]
+  - @agent-fabric/agents-core@0.78.2
+
+## 0.78.1
+
+### Patch Changes
+
+- Updated dependencies [8b0bc17]
+- Updated dependencies [8b0bc17]
+  - @agent-fabric/agents-core@0.78.1
+
+## 0.78.0
+
+### Patch Changes
+
+- Updated dependencies [9634a17]
+- Updated dependencies [252efd9]
+  - @agent-fabric/agents-core@0.78.0
+
+## 0.77.1
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.77.1
+
+## 0.77.0
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.77.0
+
+## 0.76.0
+
+### Patch Changes
+
+- Updated dependencies [b29a931]
+- Updated dependencies [a30cce4]
+- Updated dependencies [d0a21b4]
+- Updated dependencies [7efbf18]
+  - @agent-fabric/agents-core@0.76.0
+
+## 0.75.4
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.75.4
+
+## 0.75.3
+
+### Patch Changes
+
+- Updated dependencies [c9072d5]
+  - @agent-fabric/agents-core@0.75.3
+
+## 0.75.2
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.75.2
+
+## 0.75.1
+
+### Patch Changes
+
+- Updated dependencies [d7a6762]
+- Updated dependencies [2042ce9]
+  - @agent-fabric/agents-core@0.75.1
+
+## 0.75.0
+
+### Patch Changes
+
+- Updated dependencies [db2be2f]
+  - @agent-fabric/agents-core@0.75.0
+
+## 0.74.4
+
+### Patch Changes
+
+- Updated dependencies [1521dcc]
+  - @agent-fabric/agents-core@0.74.4
+
+## 0.74.3
+
+### Patch Changes
+
+- Updated dependencies [87e4bf1]
+- Updated dependencies [d6c3176]
+  - @agent-fabric/agents-core@0.74.3
+
+## 0.74.2
+
+### Patch Changes
+
+- Updated dependencies [3adbaa4]
+- Updated dependencies [ba25590]
+  - @agent-fabric/agents-core@0.74.2
+
+## 0.74.1
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.74.1
+
+## 0.74.0
+
+### Patch Changes
+
+- Updated dependencies [bb0aba5]
+- Updated dependencies [ab6276d]
+- Updated dependencies [be4d081]
+- Updated dependencies [fbb4048]
+- Updated dependencies [1af568e]
+  - @agent-fabric/agents-core@0.74.0
+
+## 0.73.5
+
+### Patch Changes
+
+- cbc947d: Add Slack webhook integration with per-event Block Kit formatting
+  - @agent-fabric/agents-core@0.73.5
+
+## 0.73.4
+
+### Patch Changes
+
+- Updated dependencies [867384b]
+- Updated dependencies [4f7c661]
+  - @agent-fabric/agents-core@0.73.4
+
+## 0.73.3
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.73.3
+
+## 0.73.2
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.73.2
+
+## 0.73.1
+
+### Patch Changes
+
+- Updated dependencies [f069c82]
+  - @agent-fabric/agents-core@0.73.1
+
+## 0.73.0
+
+### Patch Changes
+
+- Updated dependencies [ed76d93]
+  - @agent-fabric/agents-core@0.73.0
+
+## 0.72.2
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.72.2
+
+## 0.72.1
+
+### Patch Changes
+
+- Updated dependencies [52e099d]
+  - @agent-fabric/agents-core@0.72.1
+
+## 0.72.0
+
+### Patch Changes
+
+- Updated dependencies [4a0d963]
+- Updated dependencies [4a0d963]
+  - @agent-fabric/agents-core@0.72.0
+
+## 0.71.0
+
+### Patch Changes
+
+- Updated dependencies [e348e84]
+- Updated dependencies [648957c]
+- Updated dependencies [2e2d3aa]
+- Updated dependencies [c3cbdbf]
+  - @agent-fabric/agents-core@0.71.0
+
+## 0.70.8
+
+### Patch Changes
+
+- 3f9262b: Add `AGENT_FABRIC_SLACK_DISABLE_DURABLE_EXECUTION` env var to disable the Slack work-app's forced `executionMode: 'durable'` on agent runs. When set to `"true"`, the work-app omits `executionMode` from `/run/api/chat` requests so each agent's own configured mode is used. Workaround for the 2-minute idle stream timeout in older `@workflow/world-vercel` SDK versions where long sub-agent delegations cause empty Slack messages. Default behavior unchanged.
+  - @agent-fabric/agents-core@0.70.8
+
+## 0.70.7
+
+### Patch Changes
+
+- Updated dependencies [a03d008]
+- Updated dependencies [2e5c421]
+  - @agent-fabric/agents-core@0.70.7
+
+## 0.70.6
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.70.6
+
+## 0.70.5
+
+### Patch Changes
+
+- Updated dependencies [26cc75a]
+- Updated dependencies [903b1ef]
+  - @agent-fabric/agents-core@0.70.5
+
+## 0.70.4
+
+### Patch Changes
+
+- d96e872: Fix Slack workspace uninstall failing with "Slack workspace not found or not associated with a tenant"
+
+  The manage UI was passing the Nango `connectionId` (e.g. `E::T:T012AB3C4`) to `DELETE /work-apps/slack/workspaces/{teamId}`, but `requireWorkspaceAdmin` middleware uses that path parameter directly to look up the workspace by raw Slack team ID. The lookup never matched and uninstall failed with a 404.
+
+  The route now enforces a single contract: `:teamId` must be a raw Slack team ID (`T...`). A shared `SlackTeamIdSchema` Zod regex rejects connection IDs and other malformed values at the request boundary with 400 (instead of leaking into a confusing 404 from the middleware). The DELETE handler's dual `connectionId`-or-`teamId` parsing is removed, and the manage UI now sends `workspace.teamId` for uninstall.
+
+- Updated dependencies [5bd4911]
+- Updated dependencies [4ecbba7]
+  - @agent-fabric/agents-core@0.70.4
+
+## 0.70.3
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.70.3
+
+## 0.70.2
+
+### Patch Changes
+
+- Updated dependencies [a4d2360]
+  - @agent-fabric/agents-core@0.70.2
+
+## 0.70.1
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.70.1
+
+## 0.70.0
+
+### Patch Changes
+
+- Updated dependencies [60a0c60]
+- Updated dependencies [1570c2a]
+  - @agent-fabric/agents-core@0.70.0
+
+## 0.69.1
+
+### Patch Changes
+
+- Updated dependencies [a6bd5ec]
+  - @agent-fabric/agents-core@0.69.1
+
+## 0.69.0
+
+### Patch Changes
+
+- Updated dependencies [52d0831]
+- Updated dependencies [c63567e]
+- Updated dependencies [32bce4f]
+  - @agent-fabric/agents-core@0.69.0
+
+## 0.68.4
+
+### Patch Changes
+
+- 7438f76: add thread to resume link message context
+  - @agent-fabric/agents-core@0.68.4
+
+## 0.68.3
+
+### Patch Changes
+
+- Updated dependencies [e8776f5]
+  - @agent-fabric/agents-core@0.68.3
+
+## 0.68.2
+
+### Patch Changes
+
+- Updated dependencies [557f700]
+- Updated dependencies [4e0fd65]
+  - @agent-fabric/agents-core@0.68.2
+
+## 0.68.1
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.68.1
+
+## 0.68.0
+
+### Patch Changes
+
+- Updated dependencies [d1e18a8]
+  - @agent-fabric/agents-core@0.68.0
+
+## 0.67.4
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.67.4
+
+## 0.67.3
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.67.3
+
+## 0.67.2
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.67.2
+
+## 0.67.1
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.67.1
+
+## 0.67.0
+
+### Patch Changes
+
+- Updated dependencies [757ac77]
+  - @agent-fabric/agents-core@0.67.0
+
+## 0.66.1
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.66.1
+
+## 0.66.0
+
+### Patch Changes
+
+- Updated dependencies [5596ecb]
+- Updated dependencies [63a1358]
+- Updated dependencies [01a960d]
+- Updated dependencies [4d0169b]
+  - @agent-fabric/agents-core@0.66.0
+
+## 0.65.2
+
+### Patch Changes
+
+- 50f57fa: Remove unused bot scopes (channels:join, search:read.\*) and add app_uninstalled/tokens_revoked event listeners
+- Updated dependencies [fa18f84]
+- Updated dependencies [34e1d67]
+- Updated dependencies [93eb31e]
+  - @agent-fabric/agents-core@0.65.2
+
+## 0.65.1
+
+### Patch Changes
+
+- Updated dependencies [3735393]
+- Updated dependencies [dbee04b]
+  - @agent-fabric/agents-core@0.65.1
+
+## 0.65.0
+
+### Patch Changes
+
+- Updated dependencies [e332202]
+  - @agent-fabric/agents-core@0.65.0
+
+## 0.64.10
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.64.10
+
+## 0.64.9
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.64.9
+
+## 0.64.8
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.64.8
+
+## 0.64.7
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.64.7
+
+## 0.64.6
+
+### Patch Changes
+
+- Updated dependencies [09c6eb0]
+- Updated dependencies [3237c45]
+- Updated dependencies [528f69c]
+- Updated dependencies [6fddd34]
+  - @agent-fabric/agents-core@0.64.6
+
+## 0.64.5
+
+### Patch Changes
+
+- Updated dependencies [e91d67b]
+  - @agent-fabric/agents-core@0.64.5
+
+## 0.64.4
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.64.4
+
+## 0.64.3
+
+### Patch Changes
+
+- Updated dependencies [7aa1fac]
+- Updated dependencies [4ace590]
+  - @agent-fabric/agents-core@0.64.3
+
+## 0.64.2
+
+### Patch Changes
+
+- Updated dependencies [f099221]
+  - @agent-fabric/agents-core@0.64.2
+
+## 0.64.1
+
+### Patch Changes
+
+- a26343d: fix `@agent-fabric/agents-work-apps` build, mark `@slack/socket-mode` as `dependency` to avoid compiling its source code
+  - @agent-fabric/agents-core@0.64.1
+
+## 0.64.0
+
+### Patch Changes
+
+- Updated dependencies [47915b3]
+- Updated dependencies [2ebe1c4]
+- Updated dependencies [68a55f5]
+- Updated dependencies [abc3b5d]
+  - @agent-fabric/agents-core@0.64.0
+
+## 0.63.3
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.63.3
+
+## 0.63.2
+
+### Patch Changes
+
+- Updated dependencies [dc818c0]
+- Updated dependencies [dc818c0]
+  - @agent-fabric/agents-core@0.63.2
+
+## 0.63.1
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.63.1
+
+## 0.63.0
+
+### Patch Changes
+
+- Updated dependencies [0f77d00]
+  - @agent-fabric/agents-core@0.63.0
+
+## 0.62.2
+
+### Patch Changes
+
+- Updated dependencies [f614c56]
+  - @agent-fabric/agents-core@0.62.2
+
+## 0.62.1
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.62.1
+
+## 0.62.0
+
+### Patch Changes
+
+- Updated dependencies [ce9c516]
+  - @agent-fabric/agents-core@0.62.0
+
+## 0.61.0
+
+### Patch Changes
+
+- Updated dependencies [12722d9]
+- Updated dependencies [f4a9c69]
+  - @agent-fabric/agents-core@0.61.0
+
+## 0.60.0
+
+### Patch Changes
+
+- Updated dependencies [2eaebb3]
+- Updated dependencies [c0018a6]
+- Updated dependencies [ed10886]
+- Updated dependencies [b1199eb]
+  - @agent-fabric/agents-core@0.60.0
+
+## 0.59.4
+
+### Patch Changes
+
+- 6a8a439: Add oxfmt format option to github file tools
+- 99b5edf: Update TypeScript to 6.0.2
+- Updated dependencies [be7f056]
+- Updated dependencies [99b5edf]
+  - @agent-fabric/agents-core@0.59.4
+
+## 0.59.3
+
+### Patch Changes
+
+- Updated dependencies [51d6dfd]
+- Updated dependencies [6ca8164]
+  - @agent-fabric/agents-core@0.59.3
+
+## 0.59.2
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.59.2
+
+## 0.59.1
+
+### Patch Changes
+
+- Updated dependencies [bab9603]
+  - @agent-fabric/agents-core@0.59.1
+
+## 0.59.0
+
+### Patch Changes
+
+- Updated dependencies [b1e6ced]
+  - @agent-fabric/agents-core@0.59.0
+
+## 0.58.21
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.58.21
+
+## 0.58.20
+
+### Patch Changes
+
+- b4baf66: Fix GitHub OIDC token exchange to scope installation tokens to the repository from the OIDC claims.
+- Updated dependencies [3a868c0]
+- Updated dependencies [15c6752]
+- Updated dependencies [62aad0e]
+  - @agent-fabric/agents-core@0.58.20
+
+## 0.58.19
+
+### Patch Changes
+
+- Updated dependencies [f8f16f4]
+- Updated dependencies [1571ef1]
+- Updated dependencies [9660fc2]
+  - @agent-fabric/agents-core@0.58.19
+
+## 0.58.18
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.58.18
+
+## 0.58.17
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.58.17
+
+## 0.58.16
+
+### Patch Changes
+
+- Updated dependencies [5065552]
+  - @agent-fabric/agents-core@0.58.16
+
+## 0.58.15
+
+### Patch Changes
+
+- b10c96f: Fix tenant path injection in Slack OAuth callback by validating tenantId against allowed characters
+- 1ca09cd: Remove unwanted im:\* OAuth scopes and derive bot scopes from manifest as single source of truth
+- Updated dependencies [abaefda]
+  - @agent-fabric/agents-core@0.58.15
+
+## 0.58.14
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.58.14
+
+## 0.58.13
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.58.13
+
+## 0.58.12
+
+### Patch Changes
+
+- Updated dependencies [ad8a7cd]
+- Updated dependencies [ad8a7cd]
+  - @agent-fabric/agents-core@0.58.12
+
+## 0.58.11
+
+### Patch Changes
+
+- Updated dependencies [c87dc3e]
+  - @agent-fabric/agents-core@0.58.11
+
+## 0.58.10
+
+### Patch Changes
+
+- fa64456: Security and bug fixes
+- 02bcd0e: Fix authorization bypass vulnerability in @hono/node-server (CVE-2026-29087)
+- f41500b: Security and bug fixes
+- Updated dependencies [fa64456]
+- Updated dependencies [02bcd0e]
+- Updated dependencies [f41500b]
+- Updated dependencies [41af59e]
+  - @agent-fabric/agents-core@0.58.10
+
+## 0.58.9
+
+### Patch Changes
+
+- Updated dependencies [f150b28]
+- Updated dependencies [49909bf]
+- Updated dependencies [4816f02]
+  - @agent-fabric/agents-core@0.58.9
+
+## 0.58.8
+
+### Patch Changes
+
+- Updated dependencies [e89948d]
+  - @agent-fabric/agents-core@0.58.8
+
+## 0.58.7
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.58.7
+
+## 0.58.6
+
+### Patch Changes
+
+- a9c2857: bumping nango dependencies and adding posthog to mcpCatalog
+- Updated dependencies [a9c2857]
+- Updated dependencies [16e5e8d]
+  - @agent-fabric/agents-core@0.58.6
+
+## 0.58.5
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.58.5
+
+## 0.58.4
+
+### Patch Changes
+
+- 87ac81f: Include search users, public messages and files scopes in slack app manifest.
+- f475d74: Fix GitHub MCP tool access to be project-scoped instead of globally scoped by toolId
+- 2d6ec44: Add `get-slack-user` MCP tool for looking up Slack users by ID, email, or name
+- Updated dependencies [0451e1d]
+- Updated dependencies [d7c1001]
+- Updated dependencies [f475d74]
+  - @agent-fabric/agents-core@0.58.4
+
+## 0.58.3
+
+### Patch Changes
+
+- 0714ac6: Add Slack MCP server with post-message tool for agent-to-Slack messaging
+- Updated dependencies [0714ac6]
+  - @agent-fabric/agents-core@0.58.3
+
+## 0.58.2
+
+### Patch Changes
+
+- Updated dependencies [31c0f68]
+- Updated dependencies [ee5b4c9]
+- Updated dependencies [eb5b16f]
+  - @agent-fabric/agents-core@0.58.2
+
+## 0.58.1
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.58.1
+
+## 0.58.0
+
+### Patch Changes
+
+- Updated dependencies [3d88636]
+  - @agent-fabric/agents-core@0.58.0
+
+## 0.57.0
+
+### Patch Changes
+
+- Updated dependencies [5bc298e]
+- Updated dependencies [95e2477]
+  - @agent-fabric/agents-core@0.57.0
+
+## 0.56.2
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.56.2
+
+## 0.56.1
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.56.1
+
+## 0.56.0
+
+### Patch Changes
+
+- Updated dependencies [06e8c12]
+  - @agent-fabric/agents-core@0.56.0
+
+## 0.55.3
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.55.3
+
+## 0.55.2
+
+### Patch Changes
+
+- Updated dependencies [4414e25]
+  - @agent-fabric/agents-core@0.55.2
+
+## 0.55.1
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.55.1
+
+## 0.55.0
+
+### Patch Changes
+
+- Updated dependencies [08d678d]
+  - @agent-fabric/agents-core@0.55.0
+
+## 0.54.0
+
+### Minor Changes
+
+- addc4a0: Move workspace default agent config from Nango metadata to PostgreSQL
+- addc4a0: Remove denormalized agent names from Slack channel configs — resolve names at read time from manage DB, clean up orphaned configs on agent/project deletion, validate agent existence on write
+
+### Patch Changes
+
+- Updated dependencies [addc4a0]
+- Updated dependencies [addc4a0]
+  - @agent-fabric/agents-core@0.54.0
+
+## 0.53.13
+
+### Patch Changes
+
+- 23b6b48: fix spans for work app
+- Updated dependencies [e915ef8]
+  - @agent-fabric/agents-core@0.53.13
+
+## 0.53.12
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.53.12
+
+## 0.53.11
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.53.11
+
+## 0.53.10
+
+### Patch Changes
+
+- 7299f4a: UI tweaks for slack app
+- Updated dependencies [eacb0dc]
+- Updated dependencies [33780a8]
+  - @agent-fabric/agents-core@0.53.10
+
+## 0.53.9
+
+### Patch Changes
+
+- 8a0c90c: Increasing slack streaming timeout to 30 minutes
+- Updated dependencies [9a2d783]
+- Updated dependencies [27cd96b]
+- Updated dependencies [603d7a8]
+  - @agent-fabric/agents-core@0.53.9
+
+## 0.53.8
+
+### Patch Changes
+
+- 50b63a3: Add Slack source indicator with entry point tracking to conversation traces and stats. Distinguishes between app mention, DM, slash command, message shortcut, modal submission, and smart link resume entry points. Fix resume-intent to use getInProcessFetch for multi-instance safety.
+- 4761e1f: Add indexed citation formatting and inline citation injection in Slack
+  - @agent-fabric/agents-core@0.53.8
+
+## 0.53.7
+
+### Patch Changes
+
+- Updated dependencies [aa37d3f]
+- Updated dependencies [54985c0]
+  - @agent-fabric/agents-core@0.53.7
+
+## 0.53.6
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.53.6
+
+## 0.53.5
+
+### Patch Changes
+
+- 7abd1bd: Dont stream tool errors that were successfully retried
+  - @agent-fabric/agents-core@0.53.5
+
+## 0.53.4
+
+### Patch Changes
+
+- 16d775c: Use users.conversations API for channel listing to return only bot-member channels, reducing API calls for large workspaces
+- be72c29: Add move-file tool to GitHub MCP
+- Updated dependencies [35ca5cb]
+  - @agent-fabric/agents-core@0.53.4
+
+## 0.53.3
+
+### Patch Changes
+
+- f7e47ab: Add public messaging for all Slack surfaces, DM support, and per-trigger conversation model
+- Updated dependencies [f7e47ab]
+  - @agent-fabric/agents-core@0.53.3
+
+## 0.53.2
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.53.2
+
+## 0.53.1
+
+### Patch Changes
+
+- 8063da9: Add attachment content to slack messages
+- bd3aab5: Add randomness to generated branch names to prevent collisions
+- 75fbceb: Add smart Slack link — preserve user questions in JWT intent claims and auto-resume after account linking
+- c4d8a7b: Add project name and link to /agent-fabric status command response.
+- Updated dependencies [75fbceb]
+  - @agent-fabric/agents-core@0.53.1
+
+## 0.53.0
+
+### Minor Changes
+
+- 901ff0a: Add PR body reactions to GitHub MCP. BREAKING: Renamed `add-comment-reaction` → `add-reaction`, `remove-comment-reaction` → `remove-reaction` and `list-comment-reactions` → `list-reactions`. Parameters `comment_id`/`comment_type` renamed to `target_id`/`target_type`.
+
+### Patch Changes
+
+- 6d435a6: Refactor lookupAgentName to reuse fetchAgentsForProject instead of duplicating API call logic
+- 41ed409: Fix Slack responses showing agent ID instead of agent name in thinking messages and signatures across all interaction types
+- 38506a8: Show agent name and ID in Slack modal dropdowns for disambiguation
+- f868a96: Enforce single Slack workspace per tenant and improve error handling
+- 4d4fa33: Update slack user metadata in thread context
+- Updated dependencies [0a0cb6e]
+  - @agent-fabric/agents-core@0.53.0
+
+## 0.52.0
+
+### Patch Changes
+
+- eea5f0a: agents-core: Add isUniqueConstraintError and throwIfUniqueConstraintError helpers to normalize unique constraint error detection across PostgreSQL and Doltgres
+
+  agents-api: Fix duplicate resource creation returning 500 instead of 409 when Doltgres reports unique constraint violations as MySQL errno 1062
+
+  agents-work-apps: Fix concurrent user mapping creation returning 500 instead of succeeding silently when a duplicate mapping already exists
+
+- f2d822b: Fix Slack modal showing 'We had some trouble connecting' error on form submission by returning empty ack body
+- 520e4f0: Add branch file inspection tool to github mcp
+- Updated dependencies [886b2da]
+- Updated dependencies [eea5f0a]
+- Updated dependencies [65f71b5]
+  - @agent-fabric/agents-core@0.52.0
+
+## 0.51.0
+
+### Patch Changes
+
+- fe36caa: Fix error response format consistency in join-from-workspace endpoints
+- 012a843: Add tool approvals to slack app
+- Updated dependencies [012a843]
+- Updated dependencies [fe36caa]
+  - @agent-fabric/agents-core@0.51.0
+
+## 0.50.6
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.50.6
+
+## 0.50.5
+
+### Patch Changes
+
+- Updated dependencies [56fd821]
+  - @agent-fabric/agents-core@0.50.5
+
+## 0.50.4
+
+### Patch Changes
+
+- Updated dependencies [e623802]
+  - @agent-fabric/agents-core@0.50.4
+
+## 0.50.3
+
+### Patch Changes
+
+- 2005b87: Fix internal API routing for Slack work app in multi-instance environments.
+- 1be6def: Update slack streaming timeout to 10 minutes
+- 0011c4b: Mimic nango config in dev mode.
+- Updated dependencies [2005b87]
+- Updated dependencies [d50fa44]
+  - @agent-fabric/agents-core@0.50.3
+
+## 0.50.2
+
+### Patch Changes
+
+- becf184: standardize permission checks in routes
+- Updated dependencies [fa71905]
+- Updated dependencies [a4ee2d4]
+- Updated dependencies [becf184]
+  - @agent-fabric/agents-core@0.50.2
+
+## 0.50.1
+
+### Patch Changes
+
+- Updated dependencies [e643f0e]
+- Updated dependencies [561659a]
+- Updated dependencies [6d31fe6]
+  - @agent-fabric/agents-core@0.50.1
+
+## 0.50.0
+
+### Minor Changes
+
+- 5bd9461: Add reaction tooling to github mcp.
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.50.0
+
+## 0.49.0
+
+### Minor Changes
+
+- 3f556b7: Remove run and list commands from slack app
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.49.0
+
+## 0.48.7
+
+### Patch Changes
+
+- Updated dependencies [3532557]
+  - @agent-fabric/agents-core@0.48.7
+
+## 0.48.6
+
+### Patch Changes
+
+- Updated dependencies [2e8d956]
+  - @agent-fabric/agents-core@0.48.6
+
+## 0.48.5
+
+### Patch Changes
+
+- f39f8b0: Update slack message formatting to include channel and user names.
+  - @agent-fabric/agents-core@0.48.5
+
+## 0.48.4
+
+### Patch Changes
+
+- 2a91f04: Remove hostname allowlist validation for AGENT_FABRIC_AGENTS_MANAGE_UI_URL to support custom domains
+- Updated dependencies [11f4e14]
+  - @agent-fabric/agents-core@0.48.4
+
+## 0.48.3
+
+### Patch Changes
+
+- Updated dependencies [24e75fb]
+- Updated dependencies [79dffed]
+  - @agent-fabric/agents-core@0.48.3
+
+## 0.48.2
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.48.2
+
+## 0.48.1
+
+### Patch Changes
+
+- a0464cb: Fix Slack API retry import
+  - @agent-fabric/agents-core@0.48.1
+
+## 0.48.0
+
+### Patch Changes
+
+- 7417653: Fix Slack API pagination for channels and membership checks
+- 94fcd60: Add line number option to get-file-content tool
+- 2521fcf: remove server cache
+- Updated dependencies [f981006]
+- Updated dependencies [e11fae9]
+- Updated dependencies [228d4e2]
+- Updated dependencies [7ad7e21]
+- Updated dependencies [95a3abc]
+- Updated dependencies [b2a6078]
+  - @agent-fabric/agents-core@0.48.0
+
+## 0.47.5
+
+### Patch Changes
+
+- @agent-fabric/agents-core@0.47.5
+
+## 0.47.4
+
+### Patch Changes
+
+- Updated dependencies [83346fc]
+- Updated dependencies [5f3f5ea]
+  - @agent-fabric/agents-core@0.47.4
+
+## 0.47.3
+
+### Patch Changes
+
+- 3abfc41: Simplify author payload and add isSuggestion
+- Updated dependencies [756a560]
+- Updated dependencies [045c405]
+  - @agent-fabric/agents-core@0.47.3
+
+## 0.47.2
+
+### Patch Changes
+
+- Updated dependencies [c5357e5]
+  - @agent-fabric/agents-core@0.47.2
+
+## 0.47.1
+
+### Patch Changes
+
+- Updated dependencies [6fbe785]
+  - @agent-fabric/agents-core@0.47.1
+
+## 0.47.0
+
+### Patch Changes
+
+- Updated dependencies [77a45c9]
+- Updated dependencies [cfee934]
+  - @agent-fabric/agents-core@0.47.0
+
+## 0.46.1
+
+### Patch Changes
+
+- 6139d11: Github mcp efficiency improvements
+- Updated dependencies [f6010a1]
+- Updated dependencies [07a027d]
+  - @agent-fabric/agents-core@0.46.1
+
+## 0.46.0
+
+### Patch Changes
+
+- 4811c97: performance imp trace
+- Updated dependencies [4811c97]
+- Updated dependencies [12ad286]
+  - @agent-fabric/agents-core@0.46.0
+
+## 0.45.3
+
+### Patch Changes
+
+- 37248c6: visualize update from feature branch
+- 16f91d0: bump `hono` to `^4.11.7` to fix pnpm audit vulnerabilities
+- Updated dependencies [4a83260]
+- Updated dependencies [bee6724]
+- Updated dependencies [16f91d0]
+- Updated dependencies [632d68d]
+  - @agent-fabric/agents-core@0.45.3
+
+## 0.45.2
+
+### Patch Changes
+
+- Updated dependencies [4524c28]
+  - @agent-fabric/agents-core@0.45.2
+
+## 0.45.1
+
+### Patch Changes
+
+- 54b2d4c: Get file content from feature branch
+- Updated dependencies [21e6ae5]
+  - @agent-fabric/agents-core@0.45.1
+
+## 0.45.0
+
+### Patch Changes
+
+- 0ef70dd: Add review params to pull request tool.
+- 4f91394: add new available-agents route and authz permissions to runAuth middleware
+- Updated dependencies [938ffb8]
+- Updated dependencies [4f91394]
+- Updated dependencies [6f5bd15]
+  - @agent-fabric/agents-core@0.45.0
+
+## 0.44.0
+
+### Minor Changes
+
+- 08aa941: Add GitHub app management functionality
+
+### Patch Changes
+
+- Updated dependencies [08aa941]
+- Updated dependencies [5bb2da2]
+- Updated dependencies [8a283ea]
+- Updated dependencies [bcc26b4]
+- Updated dependencies [ba853ef]
+  - @agent-fabric/agents-core@0.44.0

@@ -1,0 +1,120 @@
+'use server';
+
+import type { McpTool, ToolApiInsert } from '@agent-fabric/agents-core';
+import { cache } from 'react';
+import type { ListResponse, SingleResponse } from '../types/response';
+// Default configuration
+import { makeManagementApiRequest } from './api-config';
+
+// Use Omit to make id optional for creation, and add metadata field
+type CreateMCPToolRequest = Omit<ToolApiInsert, 'id'> & {
+  id?: string; // Make id optional for creation
+  metadata?: {
+    tags?: string[];
+    category?: string;
+    vendor?: string;
+    documentation_url?: string;
+    support_contact?: string;
+  };
+};
+
+/**
+ * List all MCP tools for the current tenant
+ */
+export async function fetchMCPTools(
+  tenantId: string,
+  projectId: string,
+  options?: {
+    page?: number;
+    pageSize?: number;
+    status?: McpTool['status'];
+    skipDiscovery?: boolean;
+  }
+): Promise<McpTool[]> {
+  const { page = 1, pageSize = 100, status, skipDiscovery } = options ?? {};
+
+  const params = new URLSearchParams({
+    page: page.toString(),
+    limit: pageSize.toString(),
+  });
+
+  if (status) {
+    params.append('status', status);
+  }
+
+  if (skipDiscovery) {
+    params.append('skipDiscovery', 'true');
+  }
+
+  const response = await makeManagementApiRequest<ListResponse<McpTool>>(
+    `tenants/${tenantId}/projects/${projectId}/tools?${params}`
+  );
+
+  // Filter to only return MCP tools (config.type === 'mcp')
+  return response.data.filter((tool) => tool.config?.type === 'mcp');
+}
+
+/**
+ * Get a single MCP tool by ID
+ */
+async function $fetchMCPTool(tenantId: string, projectId: string, id: string): Promise<McpTool> {
+  const response = await makeManagementApiRequest<SingleResponse<McpTool>>(
+    `tenants/${tenantId}/projects/${projectId}/tools/${id}`
+  );
+
+  return response.data;
+}
+
+export const fetchMCPTool = cache($fetchMCPTool);
+
+/**
+ * Create a new MCP tool
+ */
+export async function createMCPTool(
+  tenantId: string,
+  projectId: string,
+  data: CreateMCPToolRequest
+): Promise<McpTool> {
+  const response = await makeManagementApiRequest<SingleResponse<McpTool>>(
+    `tenants/${tenantId}/projects/${projectId}/tools`,
+    {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }
+  );
+
+  return response.data;
+}
+
+/**
+ * Update an existing MCP tool
+ */
+export async function updateMCPTool(
+  tenantId: string,
+  projectId: string,
+  id: string,
+  data: Partial<CreateMCPToolRequest>
+): Promise<McpTool> {
+  const response = await makeManagementApiRequest<SingleResponse<McpTool>>(
+    `tenants/${tenantId}/projects/${projectId}/tools/${id}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }
+  );
+
+  return response.data;
+}
+
+/**
+ * Delete an MCP tool
+ */
+export async function deleteMCPTool(
+  tenantId: string,
+  projectId: string,
+  id: string
+): Promise<void> {
+  await makeManagementApiRequest<void>(`tenants/${tenantId}/projects/${projectId}/tools/${id}`, {
+    method: 'DELETE',
+  });
+}

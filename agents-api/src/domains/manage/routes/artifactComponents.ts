@@ -1,0 +1,316 @@
+import {
+  ArtifactComponentApiInsertSchema,
+  ArtifactComponentApiUpdateSchema,
+  ArtifactComponentListResponse,
+  ArtifactComponentResponse,
+  commonGetErrorResponses,
+  createApiError,
+  createArtifactComponent,
+  deleteArtifactComponent,
+  ErrorResponseSchema,
+  generateId,
+  getArtifactComponentById,
+  listArtifactComponentsPaginated,
+  PaginationQueryParamsSchema,
+  TenantProjectIdParamsSchema,
+  TenantProjectParamsSchema,
+  throwIfUniqueConstraintError,
+  updateArtifactComponent,
+  validatePropsAsJsonSchema,
+} from '@agent-fabric/agents-core';
+import { createProtectedRoute } from '@agent-fabric/agents-core/middleware';
+import { OpenAPIHono } from '@hono/zod-openapi';
+import { requireProjectPermission } from '../../../middleware/projectAccess';
+import type { ManageAppVariables } from '../../../types/app';
+import {
+  type ManageRouteHandler,
+  openapiRegisterPutPatchRoutesForLegacy,
+} from '../../../utils/openapiDualRoute';
+import { speakeasyOffsetLimitPagination } from '../../../utils/speakeasy';
+
+const app = new OpenAPIHono<{ Variables: ManageAppVariables }>();
+
+app.openapi(
+  createProtectedRoute({
+    method: 'get',
+    path: '/',
+    summary: 'List Artifact Components',
+    operationId: 'list-artifact-components',
+    tags: ['Artifact Components'],
+    permission: requireProjectPermission('view'),
+    request: {
+      params: TenantProjectParamsSchema,
+      query: PaginationQueryParamsSchema,
+    },
+    responses: {
+      200: {
+        description: 'List of artifact components retrieved successfully',
+        content: {
+          'application/json': {
+            schema: ArtifactComponentListResponse,
+          },
+        },
+      },
+      ...commonGetErrorResponses,
+    },
+    ...speakeasyOffsetLimitPagination,
+  }),
+  async (c) => {
+    const db = c.get('db');
+    const { tenantId, projectId } = c.req.valid('param');
+    const page = Number(c.req.query('page')) || 1;
+    const limit = Math.min(Number(c.req.query('limit')) || 10, 100);
+
+    const result = await listArtifactComponentsPaginated(db)({
+      scopes: { tenantId, projectId },
+      pagination: { page, limit },
+    });
+    return c.json(result);
+  }
+);
+
+app.openapi(
+  createProtectedRoute({
+    method: 'get',
+    path: '/{id}',
+    summary: 'Get Artifact Component',
+    operationId: 'get-artifact-component-by-id',
+    tags: ['Artifact Components'],
+    permission: requireProjectPermission('view'),
+    request: {
+      params: TenantProjectIdParamsSchema,
+    },
+    responses: {
+      200: {
+        description: 'Artifact component found',
+        content: {
+          'application/json': {
+            schema: ArtifactComponentResponse,
+          },
+        },
+      },
+      ...commonGetErrorResponses,
+    },
+  }),
+  async (c) => {
+    const db = c.get('db');
+    const { tenantId, projectId, id } = c.req.valid('param');
+    const artifactComponent = await getArtifactComponentById(db)({
+      scopes: { tenantId, projectId },
+      id,
+    });
+
+    if (!artifactComponent) {
+      throw createApiError({
+        code: 'not_found',
+        message: 'Artifact component not found',
+      });
+    }
+
+    return c.json({ data: artifactComponent });
+  }
+);
+
+app.openapi(
+  createProtectedRoute({
+    method: 'post',
+    path: '/',
+    summary: 'Create Artifact Component',
+    operationId: 'create-artifact-component',
+    tags: ['Artifact Components'],
+    permission: requireProjectPermission('edit'),
+    request: {
+      params: TenantProjectParamsSchema,
+      body: {
+        content: {
+          'application/json': {
+            schema: ArtifactComponentApiInsertSchema,
+          },
+        },
+      },
+    },
+    responses: {
+      201: {
+        description: 'Artifact component created successfully',
+        content: {
+          'application/json': {
+            schema: ArtifactComponentResponse,
+          },
+        },
+      },
+      ...commonGetErrorResponses,
+    },
+  }),
+  async (c) => {
+    const db = c.get('db');
+    const { tenantId, projectId } = c.req.valid('param');
+    const body = c.req.valid('json');
+
+    if (body.props !== null && body.props !== undefined) {
+      const propsValidation = validatePropsAsJsonSchema(body.props);
+      if (!propsValidation.isValid) {
+        const errorMessages = propsValidation.errors
+          .map((e) => `${e.field}: ${e.message}`)
+          .join(', ');
+        throw createApiError({
+          code: 'bad_request',
+          message: `Invalid props schema: ${errorMessages}`,
+        });
+      }
+    }
+
+    const finalId = body.id ? String(body.id) : generateId();
+    const componentData = {
+      ...body,
+      tenantId,
+      projectId,
+      id: finalId,
+      name: String(body.name),
+      description: String(body.description),
+      props: body.props ?? null,
+      render: body.render ?? null,
+    };
+
+    try {
+      const artifactComponent = await createArtifactComponent(db)({
+        ...componentData,
+      });
+
+      return c.json({ data: artifactComponent }, 201);
+    } catch (error: any) {
+      throwIfUniqueConstraintError(error, `Artifact component with ID '${finalId}' already exists`);
+
+      // Re-throw other errors to be handled by the global error handler
+      throw error;
+    }
+  }
+);
+
+const updateArtifactComponentRouteConfig = {
+  path: '/{id}' as const,
+  summary: 'Update Artifact Component',
+  tags: ['Artifact Components'],
+  permission: requireProjectPermission('edit'),
+  request: {
+    params: TenantProjectIdParamsSchema,
+    body: {
+      content: {
+        'application/json': {
+          schema: ArtifactComponentApiUpdateSchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Artifact component updated successfully',
+      content: {
+        'application/json': {
+          schema: ArtifactComponentResponse,
+        },
+      },
+    },
+    ...commonGetErrorResponses,
+  },
+};
+
+const updateArtifactComponentHandler: ManageRouteHandler<
+  typeof updateArtifactComponentRouteConfig
+> = async (c) => {
+  const db = c.get('db');
+  const { tenantId, projectId, id } = c.req.valid('param');
+  const body = c.req.valid('json');
+
+  if (body.props !== undefined && body.props !== null) {
+    const propsValidation = validatePropsAsJsonSchema(body.props);
+    if (!propsValidation.isValid) {
+      const errorMessages = propsValidation.errors
+        .map((e) => `${e.field}: ${e.message}`)
+        .join(', ');
+      throw createApiError({
+        code: 'bad_request',
+        message: `Invalid props schema: ${errorMessages}`,
+      });
+    }
+  }
+
+  const updateData: any = {
+    ...body,
+    ...(body.name !== undefined && { name: String(body.name) }),
+    ...(body.description !== undefined && { description: String(body.description) }),
+    ...(body.props !== undefined && { props: body.props ?? null }),
+    ...(body.render !== undefined && { render: body.render ?? null }),
+  };
+
+  const updatedArtifactComponent = await updateArtifactComponent(db)({
+    scopes: { tenantId, projectId },
+    id,
+    data: updateData,
+  });
+
+  if (!updatedArtifactComponent) {
+    throw createApiError({
+      code: 'not_found',
+      message: 'Artifact component not found',
+    });
+  }
+
+  return c.json({ data: updatedArtifactComponent });
+};
+
+openapiRegisterPutPatchRoutesForLegacy(
+  app,
+  updateArtifactComponentRouteConfig,
+  updateArtifactComponentHandler,
+  {
+    operationId: 'update-artifact-component',
+  }
+);
+
+app.openapi(
+  createProtectedRoute({
+    method: 'delete',
+    path: '/{id}',
+    summary: 'Delete Artifact Component',
+    operationId: 'delete-artifact-component',
+    tags: ['Artifact Components'],
+    permission: requireProjectPermission('edit'),
+    request: {
+      params: TenantProjectIdParamsSchema,
+    },
+    responses: {
+      204: {
+        description: 'Artifact component deleted successfully',
+      },
+      404: {
+        description: 'Artifact component not found',
+        content: {
+          'application/json': {
+            schema: ErrorResponseSchema,
+          },
+        },
+      },
+    },
+  }),
+  async (c) => {
+    const db = c.get('db');
+    const { tenantId, projectId, id } = c.req.valid('param');
+
+    const deleted = await deleteArtifactComponent(db)({
+      scopes: { tenantId, projectId },
+      id,
+    });
+
+    if (!deleted) {
+      throw createApiError({
+        code: 'not_found',
+        message: 'Artifact component not found',
+      });
+    }
+
+    // Always return 204 for DELETE operations (idempotent)
+    return c.body(null, 204);
+  }
+);
+
+export default app;

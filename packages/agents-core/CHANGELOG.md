@@ -1,0 +1,2117 @@
+# @agent-fabric/agents-core
+
+## 0.80.6
+
+## 0.80.5
+
+### Patch Changes
+
+- bf54e9e: Fix `pnpm db:auth:init` failing when the haveIBeenPwned API is unreachable. The bootstrap script now skips the external password-compromise lookup (strength is still enforced locally by the password policy), and `setup-dev` fails fast in CI when auth initialization fails instead of continuing with a half-initialized environment.
+- f160b29: Fix AI Gateway timeout retries by updating the Gateway provider to correctly classify retryable errors.
+
+## 0.80.4
+
+## 0.80.3
+
+## 0.80.2
+
+### Patch Changes
+
+- ac3476b: Include Vercel-format message parts in conversation and feedback webhook payloads, matching the Get Conversation response
+
+## 0.80.1
+
+### Patch Changes
+
+- d94d837: Add time-to-first-token (TTFT) telemetry. Records three interaction-level span attributes (agent-fabric.agent.time_to_first_model_token, time_to_first_visible_token, time_to_first_visible_part) on the request span for classic SSE and Vercel data-stream responses, graph-correctly across transfers and delegations.
+
+## 0.80.0
+
+### Minor Changes
+
+- 11f7dad: Add agentName to outbound webhook event envelope
+
+### Patch Changes
+
+- 35000b5: Add optional startDate/endDate query filters to evaluation result routes; align feedback date filter params to ISO datetime format
+- d667b35: Fix MCP tool schemas being stripped of $ref/$defs, nested objects, unions, and enums. Tool input schemas are now converted via z.fromJSONSchema at ingestion (preserving the full structure for the model and validation), and the system prompt renders the full schema (resolving $ref, recursing nested objects/arrays, and showing enums and nullables) instead of a flattened one-level view.
+- 1ca58a3: Disable user-initiated organization creation via the auth API; organizations are provisioned through setup flows
+- c228447: ?conversationId= filter for slack webhook events
+
+## 0.79.1
+
+### Patch Changes
+
+- 1f02799: Deliver classic (non-durable) tool approvals across server instances via a shared decision store, fixing approvals lost when the response lands on a different instance than the one running the agent
+
+## 0.79.0
+
+### Minor Changes
+
+- 62616af: Security: scope the user-providers lookup to an organization, fixing a cross-tenant IDOR in POST /manage/api/users/providers. getUserProvidersFromDb now requires an organizationId and returns providers only for members of that org, so an org admin can no longer enumerate auth providers of users in other orgs.
+- 356084b: Outbound webhook destinations delivered via Slack Bot API
+
+### Patch Changes
+
+- 62616af: Normalize error responses: conversation-media errors now use the standard RFC-7807 envelope (code/title/status/detail) instead of bare {error}; evaluator create/update gives clear 'model/schema is required' messages and rejects non-object model/schema instead of a generic invalid_union dump
+
+## 0.78.5
+
+### Patch Changes
+
+- 78594e9: Improve performance speed of evaluator results pages
+
+## 0.78.4
+
+### Patch Changes
+
+- 292842b: Scheduled dataset runs
+- 4f78f6d: Implement scoping for evaluators in outbound webhook eval failures
+- 673f4c6: Pass fail criteria changed from flat to nested
+
+## 0.78.3
+
+## 0.78.2
+
+### Patch Changes
+
+- 4dde32b: Enable DCR + RFC 8707 validAudiences on the better-auth oauthProvider and expose oauthClientId on BaseExecutionContext.metadata so MCP clients can self-register and audit-trail their DCR client_id
+- 49fdcac: Fix timezone bug for conversations per day and cost graph
+
+## 0.78.1
+
+### Patch Changes
+
+- 8b0bc17: Simplify cache-state reporting to use the real per-call numbers. Removes the "MISS-regression" state: a cache miss is now a single neutral `MISS` instead of an alarming red "possible regression" vs a "miss is expected" split, which depended on a reliable per-call marker_count and a prior-signature cursor that the trace store does not provide. Also stops synthesizing a marker count: the conversation route and the timeline usage resolver now derive the cache state directly from the real `marker_count` (merged from the raw attributes_number bundle) and `cache_read` instead of fabricating `markerCount = 1` when a prefix signature was present — so the badge and the raw "Cache markers" field agree, and a genuine zero-marker call reads as "Skipped". `deriveCacheState` now treats a cache read as a HIT before checking the marker count, since a read is definitive proof of a hit even when the marker numeric was dropped.
+- 8b0bc17: Improve prompt caching to lower LLM input-token cost. The cached system prefix is now byte-stable (the per-request client timestamp moved from the system prompt to the current user message), tool ordering is deterministic, and conversation history is sent as reusable per-message blocks so prior turns read from cache on direct-Anthropic routes instead of being reprocessed each turn. Also fixes a history dedup bug on structured-data turns and adds a distinct telemetry signal for history-block cache participation. Behavior is unchanged for callers; gains apply across providers (explicit Anthropic markers and implicit OpenAI/Google prefix caching).
+
+## 0.78.0
+
+### Patch Changes
+
+- 9634a17: Add claude-fable-5, gemma-4-31b-it, and gemma-4-26b-a4b-it to model constants, UI picker, and CLI
+- 252efd9: Add set-based runtime data-access helpers for conversation enrichment — `getConversationsByIds`, `getFirstUserMessageByConversations`, and `getLastAssistantMessageByConversations` — that batch-fetch in a single query instead of per-conversation lookups. Add `listEvaluationRunsByRunConfigId` so callers can filter runs in the database instead of in JS. Export the existing `extractMessageText` helper so callers can extract text from both the `text` and A2A `parts` content formats.
+
+## 0.77.1
+
+## 0.77.0
+
+## 0.76.0
+
+### Minor Changes
+
+- b29a931: Add `@agent-fabric/agents-core/external-fetch` and `@agent-fabric/agents-core/text-attachments` subpath exports. The hardened external-file downloader (SSRF guard, redirect cap, size limit, content-type validation, retry-with-backoff) and the text-document attachment helpers now live in `agents-core` so consumers outside `agents-api` (e.g. copilot-app's HelpScout fetcher) can reuse them without depending on the entire `agents-api` package tree. Public barrel is curated — internal helpers like the undici dispatcher lookup callback are intentionally module-private.
+
+  `downloadExternalFile()` now accepts an optional `signal: AbortSignal` so callers running concurrent fetches under a shared aggregate budget can abort in-flight downloads when the budget expires.
+
+- 7efbf18: Lift and unify the system-prompt character cap. The agent-level prompt limit is raised from 5,000 to 200,000 characters, and the sub-agent prompt (previously uncapped) now shares the same 200,000-character limit. The cap is enforced consistently across both the standalone REST create/update paths and the full-graph write path, and remains overridable via `AGENTS_VALIDATION_AGENT_PROMPT_MAX_CHARS`. This unblocks large grounding/context documents in agent prompts. The status-update custom-prompt limit (2,000) is unchanged.
+
+### Patch Changes
+
+- a30cce4: Fix SSO provider issuer edits not refreshing OIDC discovery and cached endpoints; the update path now re-runs discovery server-side when the issuer changes
+- d0a21b4: Prefetch webhook destinations once per chat turn to eliminate redundant Doltgres branch-checkout queries during conversation execution
+
+## 0.75.4
+
+## 0.75.3
+
+### Patch Changes
+
+- c9072d5: Fix data component partial updates rejecting bodies without name and props (e.g. clearing the component renderer)
+
+## 0.75.2
+
+## 0.75.1
+
+### Patch Changes
+
+- d7a6762: Reduce amount of database reads for outbound webhooks
+- 2042ce9: Exclude evaluation LLM calls from per-conversation and cost-page spend figures so cost is consistent across the conversation list, conversation detail, and cost dashboard.
+
+## 0.75.0
+
+### Minor Changes
+
+- db2be2f: Add ALTCHA Sentinel helpers (verifySentinelPayload, isSentinelEnabled, isSentinelUpstreamUnavailable, SentinelError, SentinelVerifyResult) for typed bot protection results with infrastructure-error discrimination.
+
+## 0.74.4
+
+### Patch Changes
+
+- 1521dcc: Add Claude Opus 4.8 to model constants, the manage UI model picker, and the CLI model picker.
+
+## 0.74.3
+
+### Patch Changes
+
+- 87e4bf1: Refresh model lineup against current vendor status:
+  - Gemini: add `GEMINI_3_1_FLASH_LITE` (GA) and `GEMINI_3_5_FLASH` (GA); drop `Gemini 3 Flash` (does not exist in Google's API) and `Gemini 3 Pro Preview` (shut down 2026-03-09) from the manage-UI and CLI pickers; swap `Gemini 3.1 Flash Lite Preview` for the GA in pickers.
+  - Anthropic: add `CLAUDE_OPUS_4_7` (current Opus flagship); drop `Claude Opus 4` and `Claude Sonnet 4` (deprecated 2026-04-14, retire 2026-06-15) from pickers.
+  - OpenAI: migrate the OpenAI summarizer default from `GPT_4_1_NANO` (retires 2026-10-23) to `GPT_5_4_NANO` across the manage-UI, CLI, agents-sdk example, and create-agents template; drop `GPT-4.1 Nano` from pickers.
+
+  Constants for sunset/preview model IDs are retained so existing SDK consumers continue to compile.
+
+- d6c3176: Emit prompt-cache OpenTelemetry span attributes and provider-aware cache-token telemetry from the gateway cost middleware, and add a shared cache-state derivation helper
+
+## 0.74.2
+
+### Patch Changes
+
+- 3adbaa4: Add conversation error webhook event types
+- ba25590: UI improvements to the traces costs page and add include=agents query param to list-projects endpoint for faster cost dashboard loading
+
+## 0.74.1
+
+## 0.74.0
+
+### Minor Changes
+
+- fbb4048: Add sub-agent output contract. A new outputContract field on SubAgentConfig enforces structured-only emission via allowText, list-valued requireComponent/requireArtifact (every named component/artifact must appear), and a boolean requireTransfer (the response must hand off to another sub-agent), with a configurable onViolation policy. The active contract is also surfaced in the sub-agent's system prompt so the model is steered to comply. Opt-in; agents without a contract are unchanged.
+
+### Patch Changes
+
+- bb0aba5: Evaluation failure event added
+- ab6276d: Cost events have agent name linked
+- be4d081: `pnpm db:auth:init` now respects `AGENT_FABRIC_AUTH_INIT_FORCE_PASSWORD_RESET=true` to re-sync an existing admin user's credential-account password from `AGENT_FABRIC_AGENTS_MANAGE_UI_PASSWORD`. Default-off, so production / self-hosted re-runs of the script remain non-destructive — when the flag is unset the existing-user branch still skips the password update, preserving prior behavior.
+
+  The flag is intended for ephemeral CI environments (per-PR Railway preview) where the admin password secret may have rotated since the user was first created, leaving the stored hash mismatched against the current secret and causing sign-in 401s.
+
+- 1af568e: Cost events displayed with agent name
+
+## 0.73.5
+
+## 0.73.4
+
+### Patch Changes
+
+- 867384b: Add GPT-5.5 and GPT-5.5 Pro to OpenAI model options
+- 4f7c661: Attach Postgres connection pools to Vercel Fluid Compute so idle clients can be managed before serverless functions suspend.
+
+  This registers the manage and runtime database pools with `attachDatabasePool`, including the raw manage pool used for branch/ref-scoped Dolt work. The change follows Vercel's recommended pooling pattern for Fluid Compute to improve connection reuse and reduce the risk of leaked idle clients across suspended function instances.
+
+## 0.73.3
+
+## 0.73.2
+
+## 0.73.1
+
+### Patch Changes
+
+- f069c82: Add Better Auth captcha plugin for login endpoints (Google reCAPTCHA v3, cloud-only via AGENT_FABRIC_RECAPTCHA_SECRET_KEY)
+
+## 0.73.0
+
+### Minor Changes
+
+- ed76d93: Add custom HTTP headers for outbound webhooks; tighten header validation (RFC 7230 name charset, length limits) across all user-configurable header fields
+
+## 0.72.2
+
+## 0.72.1
+
+### Patch Changes
+
+- 52e099d: Drop FK constraints on events.conversation_id and events.message_id so events fired before their anchor rows exist (e.g. first user_message_submitted of a conversation) are not silently dropped. Conversation deletion still removes associated events via explicit app-level cleanup.
+
+## 0.72.0
+
+### Minor Changes
+
+- 4a0d963: Phase 2 of the events API: top-level identity + per-turn context columns.
+  - Add `userProperties` and `properties` jsonb columns to `conversations` and `messages` tables (D36/D37). Migration is purely additive; existing rows start null. `messages.metadata` runtime telemetry stays unchanged; `ConversationMetadata.userContext` remains intact.
+  - Add helpers in `utils/conversations.ts` for top-level access: `getConversationUserProperties`, `getConversationProperties`, `getMessageUserProperties` (with conversation fallback), `buildConversationUserProperties`. `buildConversationMetadata` now skips writing the `userProperties` argument into `metadata.userContext` and additionally populates `initiatedBy` from execution context.
+  - Update `createOrGetConversation` and `setActiveAgentForConversation` data-access helpers so chat handlers can persist `userProperties` + `properties` to the new top-level columns (last-write-wins on existing rows). Chat handlers drop widget-synthesized auto-mint identities (`identificationType` of `'ANONYMOUS'` or `'COOKIED'`) and strip the `identificationType` marker from anything they do persist — only host-supplied / SDK-supplied identities reach the database.
+  - `POST /run/v1/events` resolves event-level `userProperties` from caller body → message anchor → conversation anchor → `null`. There is no auto-fill from the JWT-verified `endUserId`; consumers needing the verified user identity should read `conversation.userId` (the cryptographically verified `sub` claim, populated on every chat turn).
+  - Add `'event.created'` to `WebhookDestinationEventTypeEnum` for the family-level subscription opted into by destinations that want all events fired through `POST /run/v1/events`.
+
+### Patch Changes
+
+- 4a0d963: Add events table, DAL, validation schemas, and lifecycle-event registry
+
+## 0.71.0
+
+### Minor Changes
+
+- 2e2d3aa: Add outbound webhooks: configure per-project HTTP destinations and receive `conversation.created`, `conversation.updated`, and `feedback.created` events with full conversation context. Webhook payloads mirror the canonical `ConversationDetail` shape now also returned by `GET /conversations/{id}`, so receivers can reuse one TypeScript type for both.
+
+### Patch Changes
+
+- e348e84: Return tenant role on apps list response
+- 648957c: Canonicalize attachment MIME types at ingress; alias types (e.g. text/x-golang, text/javascript) rewrite to canonical forms before validation
+- c3cbdbf: optimizations for querying traces
+
+## 0.70.8
+
+## 0.70.7
+
+### Patch Changes
+
+- a03d008: CSV functionality for feedback and exporting
+- 2e5c421: Sign out the autoSignIn orphan session created during `db:auth:init` and log session deletions via Better Auth's `databaseHooks.session.delete.after` hook
+
+## 0.70.6
+
+## 0.70.5
+
+### Patch Changes
+
+- 26cc75a: Enforce 15-character password policy with HaveIBeenPwned check; add password requirements UI on signup, reset, and change-password
+- 903b1ef: Use organization slug as id when creating organizations via better-auth
+
+## 0.70.4
+
+### Patch Changes
+
+- 5bd4911: First class support for origin filtering in traces
+- 4ecbba7: performance improvements for traces page
+
+## 0.70.3
+
+## 0.70.2
+
+### Patch Changes
+
+- a4d2360: improvement agent
+
+## 0.70.1
+
+## 0.70.0
+
+### Patch Changes
+
+- 60a0c60: Expand inline text document attachment support to cover a broad set of text, code, config, and markup formats, including `.yml` as an alias for YAML uploads.
+- 1570c2a: Add ZIP-based document attachment support for .pptx, .odt, .ods, .odp, .pages, .numbers, and .key alongside .docx and .xlsx, with model-aware stripping for providers that do not support these inline document parts
+
+## 0.69.1
+
+### Patch Changes
+
+- a6bd5ec: cost usage events window for signoz fixed
+
+## 0.69.0
+
+### Minor Changes
+
+- 52d0831: Add `TemplateEngine.renderPrompt()` with `PromptRenderOptions` for prompt-time resolution of built-in template variables. The new method accepts a `runtimeBuiltins` option that lets callers inject runtime values (e.g. `{ $conversation: { id } }`) to be resolved inside `{{$...}}` expressions before falling through to the existing `$env.*` handling. Existing `render()` behavior and the three non-prompt callers (delegation headers, context-fetcher URLs, MCP credential templating) are unchanged.
+
+### Patch Changes
+
+- c63567e: Add SpiceDB helpers for app credential access (app_reader relation)
+- 32bce4f: Add quickActions support to support_copilot app config (schema, persistence, editor UI)
+
+## 0.68.4
+
+## 0.68.3
+
+### Patch Changes
+
+- e8776f5: Add Microsoft as a social sign-in provider
+
+## 0.68.2
+
+### Patch Changes
+
+- 557f700: Add support_copilot app type with OAuth 2.1 JWT auth, tenant-level app discovery endpoint, and apps UI for configuring support copilot apps with credentials
+- 4e0fd65: Add invitation project assignments: automatically grant project access when invitation is accepted
+
+## 0.68.1
+
+## 0.68.0
+
+### Minor Changes
+
+- d1e18a8: Add OAuth 2.1 / OIDC provider support via Better Auth oauth-provider plugin
+
+## 0.67.4
+
+## 0.67.3
+
+## 0.67.2
+
+## 0.67.1
+
+## 0.67.0
+
+### Minor Changes
+
+- 757ac77: Add multi-user webhook triggers with per-user dispatch delay and invocation tracking.
+
+## 0.66.1
+
+## 0.66.0
+
+### Minor Changes
+
+- 5596ecb: Remove logger dependency injection from agentFull and projectFull data access functions. Agent CRUD operations now log via module-scope logger instead of silently swallowing logs. Removes exported `AgentLogger` interface and `ProjectLogger` type (zero external consumers).
+
+### Patch Changes
+
+- 63a1358: Migrate logger calls to use scoped context — remove repeated ambient fields, adopt string-only logger calls
+- 01a960d: Extract repeated string literals into shared constant modules for tool names, approval events, workflow tokens, session events, and relation types
+- 4d0169b: Add createMockLoggerModule factory in test-utils export for shared test mocks
+
+## 0.65.2
+
+### Patch Changes
+
+- fa18f84: Return static error message for all 500-level API responses to prevent information leakage
+- 34e1d67: Fix Doltgres error logging to surface root cause details, redact SQL bind params, and re-throw auto-commit failures to prevent silent data loss
+- 93eb31e: Add scoped logger context via AsyncLocalStorage for automatic request-level field propagation
+
+## 0.65.1
+
+### Patch Changes
+
+- 3735393: fix so project deletion cant delete other projects' branches
+- dbee04b: Add feedback CRUD API, database table, and Manage UI for collecting user feedback on conversations and messages
+
+## 0.65.0
+
+### Minor Changes
+
+- e332202: Add multi-user scheduled trigger support with per-user dispatch, sub-resource endpoints, and dispatch delay
+
+## 0.64.10
+
+## 0.64.9
+
+## 0.64.8
+
+## 0.64.7
+
+## 0.64.6
+
+### Patch Changes
+
+- 09c6eb0: Add stream resumption for interrupted conversations with Postgres-backed chunk buffering
+- 3237c45: Fix release workflow npm bootstrap for OIDC publishing
+- 528f69c: logging for for Doltgres database operations"
+- 6fddd34: Bugfix App Prompt Security Vulerability
+
+## 0.64.5
+
+### Patch Changes
+
+- e91d67b: Patched Doltgres Backslash Escaping
+
+## 0.64.4
+
+## 0.64.3
+
+### Patch Changes
+
+- 7aa1fac: Remove dead signTempToken function and rename derivePlaygroundKid to deriveKidFromPublicKey
+- 4ace590: Remove axios dependency in favor of native fetch for improved security
+
+## 0.64.2
+
+### Patch Changes
+
+- f099221: Fix app prompt encoding errors by resolving prompt from database via appId instead of forwarding text in HTTP headers
+
+## 0.64.1
+
+## 0.64.0
+
+### Patch Changes
+
+- 47915b3: Add agent-scoped datasets and evaluators with direct agent execution for dataset runs
+- 2ebe1c4: Add fallbackModels field to ModelSettings for gateway-based model failover
+- 68a55f5: Fix false positive 'Needs Login' status for connected MCP servers with valid credentials
+- abc3b5d: Add per-role seat limit enforcement to invitations and members UI
+
+## 0.63.3
+
+## 0.63.2
+
+### Patch Changes
+
+- dc818c0: Backfill SKILL.md files for legacy skills when migrating to nested skill files.
+- dc818c0: Add support for nested files and folders within Skills. Each skill is now a directory containing a `SKILL.md` entry file plus any number of nested reference files (templates, checklists, examples). The SDK `loadSkills()` function recursively discovers all files under each skill directory. The CLI `pull` command writes one file per skill file path. The Visual Builder shows a file-tree sidebar with per-file editing, context menus for adding and removing files, and breadcrumb navigation. The API accepts a `files` array for skill create and update, with four new file-level endpoints for individual CRUD operations. `SKILL.md` frontmatter remains the source of truth for skill name, description, and metadata.
+
+## 0.63.1
+
+## 0.63.0
+
+### Minor Changes
+
+- 0f77d00: Add scheduler workflow with centralized trigger dispatch and deploy restart endpoint
+
+## 0.62.2
+
+### Patch Changes
+
+- f614c56: Add environment-aware domain verification for the playground app
+
+## 0.62.1
+
+## 0.62.0
+
+### Minor Changes
+
+- ce9c516: Add migration to seed global playground app for authenticated chat sessions
+
+## 0.61.0
+
+### Patch Changes
+
+- 12722d9: Add interactive merge conflict resolution UI for agent-fabric pull command
+- f4a9c69: Fix key_findings persistence in compressor by using proper update instead of insert-only upsert
+
+## 0.60.0
+
+### Patch Changes
+
+- 2eaebb3: Fix deterministic ID generation for sub-agent relation/junction tables to prevent Dolt merge conflicts
+- c0018a6: Use actual AI SDK token usage for compression decisions and fix pricing service model ID lookup
+- ed10886: Add optional prompt field to app deployments for surface-specific behavioral tuning
+- b1199eb: Compute sorted merge resolution order based on fk relations
+
+## 0.59.4
+
+### Patch Changes
+
+- be7f056: Add two-phase Doltgres branch merge API with stateless conflict preview and per-row resolution
+- 99b5edf: Update TypeScript to 6.0.2
+
+## 0.59.3
+
+### Patch Changes
+
+- 51d6dfd: Verify Work App domain.
+- 6ca8164: v4 to v5 signoz migration
+
+## 0.59.2
+
+## 0.59.1
+
+### Patch Changes
+
+- bab9603: Add Composio connected account ID pinning to prevent cross-project credential leakage
+
+## 0.59.0
+
+### Minor Changes
+
+- b1e6ced: Add SSO configuration, auth method management, and domain-filtered login and invitation flows
+
+## 0.58.21
+
+## 0.58.20
+
+### Patch Changes
+
+- 3a868c0: Add isDevelopment, isTest, and isProduction environment detection helpers
+- 15c6752: Add ref fields to runtime tables for branch tracking support
+- 62aad0e: Fix API key leakage vulnerability in Slack/GitHub MCP integrations by adding URL trust validation
+
+## 0.58.19
+
+### Patch Changes
+
+- f8f16f4: Add GPT-5.4 Mini and GPT-5.4 Nano to model constants, UI picker, and CLI
+- 1571ef1: Fix project-level auth bypass in app CRUD endpoints — GET, UPDATE, and DELETE now filter by projectId in addition to tenantId, preventing cross-project access within a tenant
+- 9660fc2: Strip tenantId/projectId/agentId from trigger, scheduled trigger, and scheduled workflow update schemas to prevent cross-tenant reassignment via mass assignment
+
+## 0.58.18
+
+## 0.58.17
+
+## 0.58.16
+
+### Patch Changes
+
+- 5065552: Fix GET /conversations to return all message part types matching the streaming protocol
+
+## 0.58.15
+
+### Patch Changes
+
+- abaefda: Add defense-in-depth tenant scoping to runtime DAL functions and migrate all DAL files to type-safe scope helpers
+
+## 0.58.14
+
+## 0.58.13
+
+## 0.58.12
+
+### Patch Changes
+
+- ad8a7cd: Fix broken code generation and unresolved imports in `agent-fabric pull` command
+- ad8a7cd: Use Zod schemas from `agents-core` in `agent-fabric pull` generators instead of hand-written schemas
+
+## 0.58.11
+
+### Patch Changes
+
+- c87dc3e: Remove unsupported syntax from credential reference upsert.
+
+## 0.58.10
+
+### Patch Changes
+
+- fa64456: Security and bug fixes
+- 02bcd0e: Fix authorization bypass vulnerability in @hono/node-server (CVE-2026-29087)
+- f41500b: Security and bug fixes
+- 41af59e: utc bug for renable/disable schedule triggers
+
+## 0.58.9
+
+### Patch Changes
+
+- f150b28: Fix user-scoped credential references to upsert instead of failing on duplicate unique constraint
+- 49909bf: version packages changes
+- 4816f02: Fix CI workflows not triggering on Changesets Version Packages PR by using GitHub App token
+
+## 0.58.8
+
+### Patch Changes
+
+- e89948d: Add app credentials with anonymous JWT sessions, domain validation, and PoW challenge support
+
+## 0.58.7
+
+## 0.58.6
+
+### Patch Changes
+
+- a9c2857: bumping nango dependencies and adding posthog to mcpCatalog
+- 16e5e8d: Fix mid-generation context compression: accurate context slicing across multiple compression cycles, improved distillation quality, and richer compression telemetry
+
+## 0.58.5
+
+## 0.58.4
+
+### Patch Changes
+
+- 0451e1d: Add new models: anthropic/claude-opus-4, anthropic/claude-sonnet-4, anthropic/claude-3-7-sonnet, anthropic/claude-3-5-sonnet, anthropic/claude-3-5-sonnet-20240620, anthropic/claude-3-5-haiku, anthropic/claude-3-opus, anthropic/claude-3-haiku, google/gemini-3-flash, google/gemini-3.1-flash-lite-preview, google/gemini-2.5-flash-preview-09-2025, google/gemini-2.5-flash-lite-preview-09-2025, google/gemini-2.0-flash, google/gemini-2.0-flash-lite, openai/gpt-5.2-codex, openai/gpt-5.1-thinking, openai/gpt-5.1-codex, openai/gpt-5.1-codex-max, openai/gpt-5.1-codex-mini, openai/gpt-5-pro, openai/gpt-5-codex, openai/o3-pro, openai/o3, openai/o3-mini, openai/o4-mini, openai/o1, openai/gpt-4o, openai/gpt-4o-mini, openai/gpt-4-turbo, openai/gpt-3.5-turbo, openai/codex-mini. Remove from UI: Claude Haiku 3.5 (deprecated), Gemini 3 Flash Preview (replaced by stable Gemini 3 Flash), Claude Opus 4.1 (consolidated to Claude Opus 4).
+- d7c1001: Add GPT-5.2 Pro and GPT-5.3 Codex to model constants and UI picker
+- f475d74: Fix GitHub MCP tool access to be project-scoped instead of globally scoped by toolId
+
+## 0.58.3
+
+### Patch Changes
+
+- 0714ac6: Add Slack MCP server with post-message tool for agent-to-Slack messaging
+
+## 0.58.2
+
+### Patch Changes
+
+- 31c0f68: Add new models: openai/gpt-5.4, openai/gpt-5.4-pro
+- ee5b4c9: Add image persistence to conversation history
+- eb5b16f: timeout recorded in spans
+
+## 0.58.1
+
+## 0.58.0
+
+### Patch Changes
+
+- 3d88636: Fix lastUsed field on apikeys not being updated
+
+## 0.57.0
+
+### Minor Changes
+
+- 5bc298e: Add user profile support with timezone storage and profile settings page
+
+### Patch Changes
+
+- 95e2477: Fix provider-specific per-call options not being forwarded to AI SDK streamText calls
+
+## 0.56.2
+
+## 0.56.1
+
+## 0.56.0
+
+### Minor Changes
+
+- 06e8c12: Add user-scoped execution identity (runAsUserId) to webhook triggers
+
+## 0.55.3
+
+## 0.55.2
+
+### Patch Changes
+
+- 4414e25: Add email integration for BetterAuth callbacks (invitation and password reset emails via SMTP)
+
+## 0.55.1
+
+## 0.55.0
+
+### Patch Changes
+
+- 08d678d: Add serverInstructions to ToolServerCapabilities and expose getInstructions() on McpClient to surface MCP server default instructions
+
+## 0.54.0
+
+### Minor Changes
+
+- addc4a0: Move workspace default agent config from Nango metadata to PostgreSQL
+- addc4a0: Remove denormalized agent names from Slack channel configs — resolve names at read time from manage DB, clean up orphaned configs on agent/project deletion, validate agent existence on write
+
+## 0.53.13
+
+### Patch Changes
+
+- e915ef8: Fix MCP client TCP connection leak causing ephemeral port exhaustion
+
+## 0.53.12
+
+## 0.53.11
+
+## 0.53.10
+
+### Patch Changes
+
+- eacb0dc: adding stream timeout to trace timeline
+- 33780a8: Refactor agent form to use shared Zod schemas from `agents-core`
+
+## 0.53.9
+
+### Patch Changes
+
+- 9a2d783: Fix stale process.env after generateSecrets() and add password reconciliation in init.ts
+- 27cd96b: update composio mcp servers with api key header
+- 603d7a8: Add user-scoped scheduled trigger execution with runAsUserId field for user identity and credential resolution
+
+## 0.53.8
+
+## 0.53.7
+
+### Patch Changes
+
+- aa37d3f: Bump Slack user token and A2A service token TTL from 5 minutes to 1 hour to prevent 401 failures during long-running agent delegations
+- 54985c0: feat(dashboard): refactor external agents form to use zod schemas from `agents-core`
+
+## 0.53.6
+
+## 0.53.5
+
+## 0.53.4
+
+### Patch Changes
+
+- 35ca5cb: Refactor API key validation schemas to use shared definitions from `agents-core`
+
+## 0.53.3
+
+### Patch Changes
+
+- f7e47ab: Add public messaging for all Slack surfaces, DM support, and per-trigger conversation model
+
+## 0.53.2
+
+## 0.53.1
+
+### Patch Changes
+
+- 75fbceb: Add smart Slack link — preserve user questions in JWT intent claims and auto-resume after account linking
+
+## 0.53.0
+
+### Patch Changes
+
+- 0a0cb6e: Unify .env generation between quickstart CLI and contributor flows
+
+## 0.52.0
+
+### Patch Changes
+
+- 886b2da: Restrict `stopWhen` schema for sub-agents to only allow `stepCountIs` field
+- eea5f0a: agents-core: Add isUniqueConstraintError and throwIfUniqueConstraintError helpers to normalize unique constraint error detection across PostgreSQL and Doltgres
+
+  agents-api: Fix duplicate resource creation returning 500 instead of 409 when Doltgres reports unique constraint violations as MySQL errno 1062
+
+  agents-work-apps: Fix concurrent user mapping creation returning 500 instead of succeeding silently when a duplicate mapping already exists
+
+- 65f71b5: Derive scope config types and WHERE helpers from single source of truth (scope-definitions.ts)
+
+## 0.51.0
+
+### Minor Changes
+
+- fe36caa: Add organization service account, preferred auth method, and Slack workspace join-from-workspace schema support
+
+### Patch Changes
+
+- 012a843: Add tool approvals to slack app
+
+## 0.50.6
+
+## 0.50.5
+
+### Patch Changes
+
+- 56fd821: Fix multi-tenant unique constraint on sub_agent_skills table to scope by tenant, project, and agent
+
+## 0.50.4
+
+### Patch Changes
+
+- e623802: Add channel-based agent authorization for Slack with configurable `grantAccessToMembers` toggle
+  - Extend `SlackAccessTokenPayloadSchema` with `authorized`, `authSource`, `channelId`, `authorizedProjectId` claims
+  - Add `grantAccessToMembers` column to `work_app_slack_channel_agent_configs` table (default `true`)
+  - Extend `BaseExecutionContext` with `metadata.slack` for channel auth context
+  - Add `resolveEffectiveAgent` with `grantAccessToMembers` propagation from channel/workspace config
+
+## 0.50.3
+
+### Patch Changes
+
+- 2005b87: Fix internal API routing for Slack work app in multi-instance environments.
+- d50fa44: Released Gemini 3.1-pro
+
+## 0.50.2
+
+### Patch Changes
+
+- fa71905: Added Oversized Artifact Handling and Context Window Size Management at Provider Options
+- a4ee2d4: Add scope-aware query helpers and scoping isolation tests for junction tables
+- becf184: standardize permission checks in routes
+
+## 0.50.1
+
+### Patch Changes
+
+- e643f0e: Fix incomplete scope filtering in 9 data-access queries that could leak data across project/agent boundaries
+- 561659a: Add shared setup module for unified dev environment bootstrapping
+- 6d31fe6: Fix data and artifact components being shared across agents when subagents share the same ID
+
+## 0.50.0
+
+## 0.49.0
+
+## 0.48.7
+
+### Patch Changes
+
+- 3532557: The browser silently drops the session cookie because secure: true is set but the site
+
+## 0.48.6
+
+### Patch Changes
+
+- 2e8d956: Added sonnet 4-6
+
+## 0.48.5
+
+## 0.48.4
+
+### Patch Changes
+
+- 11f4e14: Add mock AI provider for testing run routes without API keys
+
+## 0.48.3
+
+### Patch Changes
+
+- 24e75fb: Fix peer dependency conflict for @openrouter/ai-sdk-provider with AI SDK v6
+- 79dffed: Add shared getWaitUntil utility for Vercel serverless function lifetime extension
+
+## 0.48.2
+
+## 0.48.1
+
+## 0.48.0
+
+### Minor Changes
+
+- b2a6078: ## Agent Skills
+
+  Skills are reusable instruction blocks that can be attached to sub-agents to govern behavior, reasoning, and tool usage.
+
+  ### Features
+  - **Visual Builder**: Create, edit, and delete skills from the new Skills page. Attach skills to sub-agents via the sidepane picker with drag-to-reorder support.
+
+  - **TypeScript SDK**:
+    - New `SkillDefinition` and `SkillReference` types
+    - `loadSkills(directoryPath)` helper to load skills from `SKILL.md` files
+    - `skills` config option on `SubAgent` and `Project`
+
+  - **API**: New CRUD endpoints for skills (`/skills`) and sub-agent skill associations (`/sub-agent-skills`)
+
+  - **CLI**: `agent-fabric pull` now generates skill files in the `skills/` directory
+
+  ### Loading Modes
+  - **Always loaded**: Skill content is included in every prompt
+  - **On-demand**: Skill appears as an outline in the system prompt and can be loaded via the built-in `load_skill` tool when needed
+
+  ### SKILL.md Format
+
+  ```md
+  ---
+  name: "my-skill"
+  description: "When to use this skill"
+  metadata:
+    author: org
+    version: "1.0"
+  ---
+
+  Skill content in markdown...
+  ```
+
+### Patch Changes
+
+- f981006: Unwrap generic Vercel AI SDK errors (e.g., "fetch failed") to surface root cause in logs and traces
+- e11fae9: Fix props field type in data components to be non-null and improve type safety with JsonSchemaForLlmSchemaType
+- 228d4e2: Fix nested error message display in form validation
+  - Add `firstNestedMessage` helper to recursively extract error messages from nested Zod validation objects
+  - Display error path location (e.g., `→ at ["foo", "bar"]`) for deeply nested validation errors
+  - Refactor `createCustomHeadersSchema` to use Zod `.pipe()` for cleaner error path propagation
+  - Rename `HeadersSchema` to `StringRecordSchema` for broader applicability
+
+- 7ad7e21: Refactor artifact and data component validation to use centralized Zod schemas from agents-core. This eliminates duplicate validation logic and improves consistency across the codebase.
+- 95a3abc: Add scheduled/cron trigger support across the full stack — database schema, API routes, Manage UI
+
+## 0.47.5
+
+## 0.47.4
+
+### Patch Changes
+
+- 83346fc: Retry/rerun functionality for webhook triggers in the traces UI
+- 5f3f5ea: Add keepAlive config to db connections
+
+## 0.47.3
+
+### Patch Changes
+
+- 756a560: Consolidate `ResourceId` as reusable OpenAPI component to reduce spec size
+- 045c405: add TOOL_APPROVAL_REASON to span keys
+
+## 0.47.2
+
+### Patch Changes
+
+- c5357e5: Fixes zod stringbo
+
+## 0.47.1
+
+### Patch Changes
+
+- 6fbe785: Fixes spicedb for docker
+
+## 0.47.0
+
+### Minor Changes
+
+- 77a45c9: Implements SPICEDB_TLS_ENABLED
+- cfee934: fixes the spicedb type exports
+
+## 0.46.1
+
+### Patch Changes
+
+- f6010a1: Add `HeadersSchema` export for HTTP header validation and remove unused client exports.
+- 07a027d: Add Claude Opus 4.6 to available model constants
+
+## 0.46.0
+
+### Patch Changes
+
+- 4811c97: performance imp trace
+- 12ad286: - Temp fix for chat to edit
+
+## 0.45.3
+
+### Patch Changes
+
+- 4a83260: Add custom headers validation in playground chat. Users are now notified when custom headers are invalid or required based on the agent's headers schema configuration.
+- bee6724: Fix cross-subdomain auth for domains that don't share a 3-part parent (e.g., app.localhost + api.localhost)
+- 16f91d0: bump `hono` to `^4.11.7` to fix pnpm audit vulnerabilities
+- 632d68d: Replace custom jsonSchemaToZod implementation with Zod's native z.fromJSONSchema() method
+
+## 0.45.2
+
+### Patch Changes
+
+- 4524c28: Trigger release
+
+## 0.45.1
+
+### Patch Changes
+
+- 21e6ae5: bump zod to latest 4.3.6 and fix `.omit() cannot be used on object schemas containing refinements` error
+
+## 0.45.0
+
+### Patch Changes
+
+- 938ffb8: Revert refine method in resource id schema
+- 4f91394: add new available-agents route and authz permissions to runAuth middleware
+- 6f5bd15: Add CI check for env.ts descriptions
+
+## 0.44.0
+
+### Minor Changes
+
+- 08aa941: Add GitHub app management functionality
+- ba853ef: disallow resource id schema for value `new`
+
+### Patch Changes
+
+- 5bb2da2: fix(agents-core): add AST validation for function tools `executeCode`
+- 8a283ea: Fix tool relations when renaming sub-agent IDs
+- bcc26b4: Add descriptions to environment variable schemas for better developer experience
+
+## 0.43.0
+
+### Minor Changes
+
+- de9bed1: Replace deprecated keytar package with @napi-rs/keyring for native keychain integration
+- a5ba56c: BREAKING: Replace hardcoded webhook signature verification with flexible, provider-agnostic configuration
+
+  This major version removes the legacy `signingSecret` field from triggers and replaces it with a flexible signature verification system that supports GitHub, Slack, Stripe, Zendesk, and other webhook providers.
+
+  **Breaking Changes:**
+  - Removed `signingSecret` column from triggers table (database migration required)
+  - Removed `signingSecret` parameter from TriggerInsertSchema, TriggerUpdateSchema, and TriggerApiInsert
+  - Removed `verifySigningSecret()` function from trigger-auth.ts
+  - Triggers now require `signingSecretCredentialReferenceId` and `signatureVerification` configuration for signature verification
+
+  **New Features:**
+  - Added `SignatureVerificationConfig` type supporting:
+    - Multiple HMAC algorithms: sha256, sha512, sha384, sha1, md5
+    - Multiple encodings: hex, base64
+    - Flexible signature extraction from headers, query parameters, or body
+    - Multi-component signing with configurable separators
+    - Regex extraction for complex signature formats
+    - Advanced validation options (case sensitivity, empty body handling, Unicode normalization)
+  - Added `verifySignatureWithConfig()` function with timing-safe signature comparison
+  - Added validation utilities: `validateJMESPath()`, `validateRegex()`
+  - Added comprehensive unit tests and integration tests
+  - Added credential resolution with 5-minute caching in TriggerService
+
+  **Migration Guide:**
+
+  Before (deprecated):
+
+  ```typescript
+  const trigger = {
+    signingSecret: "my-secret",
+  };
+  ```
+
+  After:
+
+  ```typescript
+  const trigger = {
+    signingSecretCredentialReferenceId: "credential-ref-id",
+    signatureVerification: {
+      algorithm: "sha256",
+      encoding: "hex",
+      signature: {
+        source: "header",
+        key: "X-Hub-Signature-256",
+        prefix: "sha256=",
+      },
+      signedComponents: [{ source: "body", required: true }],
+      componentJoin: { strategy: "concatenate", separator: "" },
+    },
+  };
+  ```
+
+  See SDK documentation for complete examples for GitHub, Slack, Stripe, and Zendesk webhooks.
+
+### Patch Changes
+
+- 5f432f9: stats page
+- 0fff69c: Centralized jmes validation
+- eef0a3f: new OAuth callback route
+- 2f9d367: trigger fix
+- 3e3a0db: unneeded code for stats
+- 0f83405: Fix trigger message template removal not working from UI
+- 5ffbf6b: trigger traces
+- 0aa5679: fix: preserve triggers when not included in fullAgent update
+
+  The fullAgent update endpoint now only deletes orphaned triggers when the triggers field is explicitly provided. This prevents triggers from being deleted when saving an agent from the UI (which doesn't manage triggers via this endpoint). The SDK now always includes triggers in agent serialization to ensure proper sync behavior.
+
+- 05a8a12: adding authorization checks and spicedb setup
+- caefccc: improve mcp servers page loading
+- 720d42f: trigger fix for vercel
+- 31b3310: Migrate fk to varchar in manage schema
+- 5f66967: triggers for vercel
+- 8160ded: improve loading mcps in agent page
+- cfa81bb: fix(agents-core): avoid calling 2 times `getCredentialReference` or `getUserScopedCredentialReference`
+
+## 0.42.0
+
+### Minor Changes
+
+- a210291: Doltgres migration and evaluation system.
+- 0893319: Make trigger messageTemplate optional in schema and validation to support data-only trigger messages
+- ad01cd7: Add triggers feature with new database schemas for trigger configuration and invocation tracking, data access functions, validation schemas, and authentication utilities
+- 82afd5b: Simplify trigger authentication schema to use headers array format with hashed secrets. Add hashTriggerHeaderValue(), validateTriggerHeaderValue(), and hashAuthenticationHeaders() utilities. Breaking change: old auth types (api_key, basic_auth, bearer_token) removed.
+
+### Patch Changes
+
+- 3940062: added extra prompting optionally to mcp tools
+- 00fbaec: output schema filtering for evals
+- 91dad33: Removed `FIELD_MODIFIERS` and related logic from `drizzle-schema-helpers.ts`, simplifying schema creation functions.
+- 44461fe: trace default
+- 4f7f0d2: Cleanup orphaned function-tools during agent update
+- 14041da: pagination fix
+- 568c1b2: added timestamp
+- c422f89: bug fix for user message evals
+- 4c65924: process attributes removed
+- b241c06: vercel workflow
+- 3e656cd: simple refactor to reorder models
+- dc827b0: improve context breakdown
+- 82afd5b: Add keepExisting support for trigger authentication header updates
+
+## 0.41.2
+
+### Patch Changes
+
+- 112b5c7: Add --local flag to agent-fabric init to set local profile as default
+- de84714: Add tsdown `clean` option based on watch status
+- af347c8: Add `dev` watch scripts and skip `d.ts` generation in watch mode across packages
+- 2e86062: warning status messages
+
+## 0.41.1
+
+### Patch Changes
+
+- d1f60f3: added azure provider
+
+## 0.41.0
+
+### Patch Changes
+
+- 49ec561: fix auth dependencies
+- 5d095da: Properly contain overflow of trace card content
+- f1a6cd4: compression ui improvements
+- 561605f: Export DEFAULT_NANGO_STORE_ID from @agent-fabric/agents-core main exports
+- 4b016d4: target ids for chat-to-edit
+- d933953: Disable colorized logs in non-TTY environments like Vercel. Logs now respect the NO_COLOR env var and automatically disable colors when stdout is not a TTY.
+- 9b17c81: streamObject removed from traces
+- f58f9e4: Fix cookie header forwarding for MCP server authentication
+
+## 0.40.0
+
+### Minor Changes
+
+- e5172e2: remove unused dependencies, lint unused dependencies with Knip
+- 178d5b1: keep file structure for build `dist` directory
+
+### Patch Changes
+
+- be0131e: user info for spans
+- 8b95949: context tracking in traces
+- b2c2fd9: fix trace viewer panes to scroll independently
+- b231869: set `compilerOptions.verbatimModuleSyntax: true` in all `tsconfig.json` files
+- 153d4e5: Added Conversation COmpression
+
+## 0.39.5
+
+### Patch Changes
+
+- d13e4c2: Fix quickstart
+- 9e4deda: Added dynamic model context limit checks
+
+## 0.39.4
+
+### Patch Changes
+
+- fcb3adc: added gemini 3 flash
+- 9403533: improve mcp connect for chat to edit
+
+## 0.39.3
+
+### Patch Changes
+
+- eba0e6b: Increase default page size to 100 (API max) for all list endpoints to show more resources without full pagination
+- a3b79b2: adjust auth settings
+- 2b156b6: migrate from tsup to tsdown
+- 9afba48: fix: resolve create-agents test mock issue with node:util and node:child_process module paths
+- 68ef774: Add x-speakeasy-pagination extension to all paginated list endpoints for Speakeasy SDK native pagination support
+
+## 0.39.2
+
+### Patch Changes
+
+- 0f2b040: added backup parser
+
+## 0.39.1
+
+### Patch Changes
+
+- cbb7c09: batch flushing
+- 00be449: found bug in system prpomt
+- 71a83d0: improve redirect logic and better-auth session use
+
+## 0.39.0
+
+### Minor Changes
+
+- f76e412: Add device_code table for CLI device authentication flow
+
+### Patch Changes
+
+- f76e412: Add AgentFabricTelemetryProvider for observability and tracing
+- f76e412: Add CI/CD support for headless operation with AGENT_FABRIC_API_KEY and environment variable overrides
+- f76e412: Add --all flag to push/pull for batch project operations and --tag for tagged config files
+- f76e412: Enhance init command with cloud onboarding wizard (scaffolds projects from remote tenant)
+- f76e412: Add profile management system for multi-remote support (profile list/add/use/current/remove)
+- f76e412: Wire profiles into push/pull commands with --profile and --quiet flags
+- f76e412: Add CLI authentication commands (login, logout, status, whoami) with device code OAuth flow
+- f76e412: Add /api/cli/me endpoint for CLI user authentication
+- f76e412: Add AgentFabricCredentialProvider abstraction for credential management
+- f76e412: Add device authorization page for CLI OAuth flow
+
+## 0.38.3
+
+## 0.38.2
+
+### Patch Changes
+
+- 907fb8f: updated models to have gpt-5-2
+
+## 0.38.1
+
+### Patch Changes
+
+- 32c4c34: improve ux for scoped credentials
+- 8c81242: ui for tool breakdown and warnings for tool calls
+- 251cecd: added mid generation compression
+- ce60f56: multi tenant auth for signoz queries
+
+## 0.38.0
+
+### Minor Changes
+
+- 515d808: Upgrade to Vercel AI SDK v6 beta
+
+### Patch Changes
+
+- b69b814: fix biome warnings
+- 8114afc: Update to open id connect for release action
+- bcee35f: add requiredToFetch on fetch definitions
+- a46303b: fix blue dot appears on inverted delegation on top left corner, refactor retrieving relationshipId in agents-core
+- 4801d35: status messages for traces shown
+- f791c6d: updated artifact handlin
+- f1f68cf: new models
+- 6dcb6b7: fix signoz for vercel
+- b3e49d9: updated schemas
+- 5fbd137: fix `Module not found: Can't resolve '../build/Release/keytar.node'` in dashboard, ignore `keytar` from bundling with `webpackIgnore` comment
+- 31be157: cloud deployment does not have signoz links
+- fcbf008: add creator to mcp server name
+
+## 0.37.2
+
+### Patch Changes
+
+- 78163b1: mcp hard fail
+- f47e391: Use hono zod in run and manage packages
+- 1f77578: Fix broken tests: mcpTool.with() returns undefined for empty selectedTools, update agentFull test canUse structure, fix projectFull dataComponents props schema
+
+## 0.37.1
+
+### Patch Changes
+
+- 505749a: Fix orphaned resource deletion in full project updates - tools, functions, credentialReferences, externalAgents, dataComponents, and artifactComponents are now properly removed when not present in the update payload
+- 7f1b78a: fix linter errors
+- e07c709: Add Cursor command for creating PRs with changeset validation
+- c3c0ac4: dependency updates
+- fbf0d97: Add validation error when attempting to delete a sub-agent that is set as default
+
+## 0.37.0
+
+### Minor Changes
+
+- 45471ab: Implement temporary API key authentication for playground with session-based auth
+
+### Patch Changes
+
+- 56e1b4d: make zod and hono zod internal deps
+- 45471ab: Fix error messages to show proper 403 access denied instead of generic internal server error
+
+## 0.36.1
+
+### Patch Changes
+
+- 1235b18: improve cors policy
+
+## 0.36.0
+
+## 0.35.12
+
+### Patch Changes
+
+- 840ca11: remove clean-package from API packages - was stripping runtime dependencies causing production errors
+
+## 0.35.11
+
+## 0.35.10
+
+### Patch Changes
+
+- 7a7e726: handle next*public* for vercel
+
+## 0.35.9
+
+### Patch Changes
+
+- 18c036d: fix better-auth type
+
+## 0.35.8
+
+### Patch Changes
+
+- 986dad2: update better-auth
+
+## 0.35.7
+
+## 0.35.6
+
+### Patch Changes
+
+- 31dbacc: handle google sign in
+
+## 0.35.5
+
+### Patch Changes
+
+- 15b564d: make agent-fabric mcp and docker optional in the quickstart
+
+## 0.35.4
+
+### Patch Changes
+
+- e297579: pull third party mcp servers
+
+## 0.35.3
+
+### Patch Changes
+
+- 89e8c26: cleaned stale components with agent-fabric pull
+
+## 0.35.2
+
+### Patch Changes
+
+- 769d8a9: fix agents-core exports
+
+## 0.35.1
+
+## 0.35.0
+
+### Minor Changes
+
+- 0d46d32: Adding auth to the framework
+
+### Patch Changes
+
+- f9a208a: Check for CLI installation in quickstart
+
+## 0.34.1
+
+### Patch Changes
+
+- 699043d: Install agent-fabric mcp in quickstarte
+- e4b5d5c: Agent Fabric add: usage instructions and target path detection
+
+## 0.34.0
+
+### Patch Changes
+
+- 7426927: add cli installation to quickstart
+- 015f9f7: Status Update Model fixed
+- bdeee9b: quickstart skip cli install option
+- 2434d22: add error handling to github fetch
+- af95c9a: added provider config
+
+## 0.33.3
+
+### Patch Changes
+
+- d957766: updated docs and model pointing
+- 9ab5e8b: fix template rendering of '-'
+- 3294024: bad schema
+- cd916ee: fix of bug when two MCPs are incorrectly highlighted as `active` in animation
+- 8bfac58: ADded new models
+- 7eafb29: updated agent docs and directory aware agent-fabric pull
+- 7b2db47: added new models
+
+## 0.33.2
+
+### Patch Changes
+
+- 4b2fd62: tool history perserved
+- bbbed5e: improve error message when saving a component with on click handler
+
+## 0.33.1
+
+### Patch Changes
+
+- 98f139a: Updated agent cil
+
+## 0.33.0
+
+### Minor Changes
+
+- b89cbd1: bump next.js to 16, react to 19.2.0
+
+### Patch Changes
+
+- d2fa856: fix mcp headers
+- d95a9de: enable Biome noUselessElse rule
+
+## 0.32.2
+
+### Patch Changes
+
+- c228770: update create-agents setup script
+
+## 0.32.1
+
+### Patch Changes
+
+- 5bd3d93: update dev deps agent-core
+
+## 0.32.0
+
+### Minor Changes
+
+- a262e1e: postgres migration
+
+### Patch Changes
+
+- 185db71: fix validation errors of form fields for:
+  - `subAgent.id`
+  - `subAgent.prompt`
+  - `agent.name`
+  - `agent.contextVariables`
+  - `agent.headersSchema`
+
+- 8d8b6dd: Fix runtime configuration implementation to properly apply environment variable overrides
+
+  This change fixes a critical bug where runtime configuration environment variables were parsed but never actually used by the runtime execution code. The fix includes:
+  1. **Core Changes (agents-core)**:
+     - Removed `getEnvNumber()` helper function
+     - Bundled all 56 runtime constants into a `runtimeConsts` export object for cleaner imports
+     - Constants now use plain default values instead of reading from `process.env` directly
+
+  2. **Environment Parsing (manage-api & run-api)**:
+     - Updated env.ts files to import `runtimeConsts` instead of individual constants
+     - Added missing `AGENTS_VALIDATION_PAGINATION_DEFAULT_LIMIT` to manage-api parsing
+     - Both APIs now properly parse environment variables and create `runtimeConfig` objects
+
+  3. **Runtime Implementation (run-api)**:
+     - Updated 10+ runtime files to import `runtimeConfig` from `../env` instead of from `@agent-fabric/agents-core`
+     - Fixed files include: Agent.ts, ToolSessionManager.ts, relationTools.ts, a2a/client.ts, AgentSession.ts, stream-helpers.ts, IncrementalStreamParser.ts, conversations.ts
+     - Environment variable overrides now properly affect runtime behavior
+
+  **Impact**: Environment variables documented in `.env.example` files now actually work. Users can configure runtime limits, timeouts, and other behavior via environment variables as intended.
+
+- cb75c9c: bug fix for pages in traces
+
+## 0.31.7
+
+### Patch Changes
+
+- 5e45a98: added coherent context
+
+## 0.31.6
+
+## 0.31.5
+
+## 0.31.4
+
+### Patch Changes
+
+- 02d6839: optimize queries
+
+## 0.31.3
+
+### Patch Changes
+
+- f91281b: use forked mcp sdk
+
+## 0.31.2
+
+### Patch Changes
+
+- 2b515de: added ability to pull without project flag
+
+## 0.31.1
+
+### Patch Changes
+
+- e81022d: hierarchical timeline
+
+## 0.31.0
+
+### Patch Changes
+
+- eadc8f8: update agents-cli a bit
+- 48a3e3e: fields for copy trace
+- b98fd0a: test agents
+
+## 0.30.4
+
+### Patch Changes
+
+- 26b89c6: upgrade quickstart packages
+- 4a73629: remove ai sdk provider input
+
+## 0.30.3
+
+### Patch Changes
+
+- 73569ce: agent name and id fixes
+
+## 0.30.2
+
+### Patch Changes
+
+- 09ac1b4: update sdk provider
+
+## 0.30.1
+
+### Patch Changes
+
+- 8b889f4: updated UI and model docs
+- c6502dd: remove two way delegation
+- c2f5582: fixed agent-fabric pull bug
+- 99bf28a: stream collection
+
+## 0.30.0
+
+### Minor Changes
+
+- 94fe795: Move templates into monorepo
+
+### Patch Changes
+
+- e95f0d3: Updated agent-fabric pull significantly
+
+## 0.29.11
+
+### Patch Changes
+
+- dba5a31: Update quickstart port check
+- b0817aa: Fix CLI bugs
+  - Quickstart agent-fabric.config.ts indents and types
+  - agent-fabric init run API and manage API urls
+
+## 0.29.10
+
+### Patch Changes
+
+- 0663c46: open browser flag
+
+## 0.29.9
+
+## 0.29.8
+
+## 0.29.7
+
+## 0.29.6
+
+### Patch Changes
+
+- 6c52cc6: unknown tenant bug fix
+
+## 0.29.5
+
+### Patch Changes
+
+- 767d466: Allow react imports in component render
+
+## 0.29.4
+
+### Patch Changes
+
+- 533fa81: StopWhen agent config fix
+
+## 0.29.3
+
+### Patch Changes
+
+- d26c5a4: team agent update bug fix
+
+## 0.29.2
+
+## 0.29.1
+
+### Patch Changes
+
+- f2ac869: upgrade docs
+- 37e50a6: fix mcp headers with context config
+- 65f4b1a: remove builtin time variables from context
+
+## 0.29.0
+
+### Minor Changes
+
+- 38db07a: require name for credentials
+
+## 0.28.0
+
+### Patch Changes
+
+- 74a4d0b: trace filter is all agents for default
+- b4e878d: Allow pushing component render
+- 96c499d: reject invalid chars in quickstart
+- 074e076: mcp evironment settings
+
+## 0.27.0
+
+### Minor Changes
+
+- 0a6df6e: tool.with syntx
+- a423b57: Team Agents
+
+### Patch Changes
+
+- 4a2af4c: Added Artifact Schema validation
+
+## 0.26.2
+
+### Patch Changes
+
+- 3c5c183: activity-planner default
+- 8a637b5: updated agent-fabric pull to have fiel validation
+
+## 0.26.1
+
+### Patch Changes
+
+- 4e3cb6a: move detect oauth to server
+
+## 0.26.0
+
+## 0.25.0
+
+### Minor Changes
+
+- 51c157e: External agents project scoped
+
+## 0.24.2
+
+### Patch Changes
+
+- 3ad959e: initialize git in quickstart
+- 7d8fcb6: cli add mcp support
+- 6699b4b: - Revert revert and fix id gen
+
+## 0.24.1
+
+### Patch Changes
+
+- 212fa9e: revert back to nanoid
+
+## 0.24.0
+
+### Patch Changes
+
+- 317efb7: use generateId everywhere
+- be54574: fix component generate-preview
+
+## 0.23.5
+
+### Patch Changes
+
+- 42d2dac: ui trace improvements
+
+## 0.23.4
+
+### Patch Changes
+
+- dba9591: Migrate CLI to @clack/prompts for improved interactive experience
+
+## 0.23.3
+
+### Patch Changes
+
+- 2fad1cf: Fixed id collisions to just have variable names matter
+
+## 0.23.2
+
+### Patch Changes
+
+- a3bea34: batch generate llm pull
+
+## 0.23.1
+
+## 0.23.0
+
+### Minor Changes
+
+- f878545: OAuth MCP Connections now use nango mcp-generic
+
+### Patch Changes
+
+- e604038: Updated Pull to support other providers
+
+## 0.22.12
+
+### Patch Changes
+
+- 79b1e87: fixed deadlinks
+
+## 0.22.11
+
+### Patch Changes
+
+- 1088fb1: Remove agent-fabric chat command
+
+## 0.22.9
+
+## 0.22.8
+
+## 0.22.7
+
+### Patch Changes
+
+- 550d251: updated agent-fabric pull :)
+
+## 0.22.6
+
+### Patch Changes
+
+- 28018a0: mcp tool error handling
+
+## 0.22.5
+
+### Patch Changes
+
+- e5fb3a4: windows quickstart support
+
+## 0.22.4
+
+### Patch Changes
+
+- e8ba7de: Add background version check to push and pull commands
+- 0b8c264: Add self-update command to CLI with automatic package manager detection and version checking
+- b788bd8: Use password entry instead of plaintext entry
+- f784f72: New models and clean up
+
+## 0.22.3
+
+### Patch Changes
+
+- d00742f: misnamed model
+
+## 0.22.2
+
+### Patch Changes
+
+- abdf614: Default model configs
+
+## 0.22.1
+
+### Patch Changes
+
+- ba2a297: Support remote sandboxes
+
+## 0.22.0
+
+### Patch Changes
+
+- 8a10d65: updated agent-fabric pull and added new zod schema support for status components
+
+## 0.21.1
+
+### Patch Changes
+
+- 4815d3a: create bearer in keychain
+- 1aefe88: Update default project
+- eb0ffa2: removed model pinning
+
+## 0.21.0
+
+### Minor Changes
+
+- 88ff25c: Fix table name for sub agent function tool relations
+
+### Patch Changes
+
+- 43cd2f6: updated tests
+
+## 0.20.1
+
+### Patch Changes
+
+- 1e5188d: split tool execution into tool call and tool result
+
+## 0.20.0
+
+### Minor Changes
+
+- fb99085: refactors agentPrompt to prompt
+
+## 0.19.9
+
+## 0.19.8
+
+### Patch Changes
+
+- e9048e2: split tool execution into tool call and tool result
+
+## 0.19.7
+
+## 0.19.6
+
+### Patch Changes
+
+- 76fb9aa: clean-up-env
+- 0d0166f: stream object in timeline
+
+## 0.19.5
+
+### Patch Changes
+
+- 22b96c4: agent-fabric cli pull command uses dynamic planner
+
+## 0.19.4
+
+### Patch Changes
+
+- 7a3fc7f: Fixed tests
+
+## 0.19.3
+
+### Patch Changes
+
+- 079a18a: more-model-def-fixes
+
+## 0.19.2
+
+### Patch Changes
+
+- 717d483: fixes-sonnet-definition
+
+## 0.19.1
+
+## 0.19.0
+
+### Minor Changes
+
+- 71a9f03: Rename Graphs to Agents, complete migration from agents to sub agents, various cleanup
+
+### Patch Changes
+
+- 849c6e9: added new cosntants for model and agent-fabric pull
+
+## 0.18.1
+
+### Patch Changes
+
+- 71892f2: types added
+
+## 0.18.0
+
+### Minor Changes
+
+- 1600323: rename agents to subAgents within the agents-sdk
+- 3684a31: Rename Agents to SubAgents
+
+### Patch Changes
+
+- 81d5a7e: Template variable preservation in placeholders
+- 2165d9b: improve errors and fix bug
+- 9bdf630: Fixed streamed non final output text tracking
+
+## 0.17.0
+
+### Minor Changes
+
+- 94c0c18: Only allow headers template creation through headers builder
+
+## 0.16.3
+
+## 0.16.2
+
+### Patch Changes
+
+- 4df3308: fix schema conversion export
+
+## 0.16.1
+
+## 0.16.0
+
+### Minor Changes
+
+- 5c3bbec: Request context refactor
+
+### Patch Changes
+
+- 35e6c9e: Updated Artifact Schema
+
+## 0.15.0
+
+### Minor Changes
+
+- ad5528c: Context config route changes
+
+## 0.14.16
+
+## 0.14.15
+
+## 0.14.14
+
+### Patch Changes
+
+- 8fe8c3e: exports drizzle
+
+## 0.14.13
+
+## 0.14.12
+
+### Patch Changes
+
+- a05d397: reduce log spam during tests runs
+
+## 0.14.11
+
+### Patch Changes
+
+- ef0a682: Release
+
+## 0.14.10
+
+### Patch Changes
+
+- cee3fa1: use type defs from @agent-fabric/agents-core in llm generated @agent-fabric/agents-cli pull command prompts
+
+## 0.14.9
+
+### Patch Changes
+
+- c7194ce: error surfacing
+
+## 0.14.8
+
+## 0.14.7
+
+### Patch Changes
+
+- d891309: Fix default graph id
+- 735d238: normalize conversation ids
+
+## 0.14.6
+
+## 0.14.5
+
+### Patch Changes
+
+- 557afac: Improve mcp client connection with cache
+
+## 0.14.4
+
+## 0.14.3
+
+## 0.14.2
+
+## 0.14.1
+
+### Patch Changes
+
+- b056d33: Fix graphWithinProject schema
+
+## 0.14.0
+
+## 0.13.0
+
+### Patch Changes
+
+- c43a622: Fix for agents-cli so that agent-fabric.config.ts values for agentsRunApiUrl and agentsManageApiUrl are respected
+- 94e010a: updated base model
+
+## 0.12.1
+
+### Patch Changes
+
+- 2c255ba: Fix for agents-cli so that agent-fabric.config.ts values for agentsRunApiUrl and agentsManageApiUrl are respected
+
+## 0.12.0
+
+### Minor Changes
+
+- 2b16ae6: add missing export
+
+## 0.11.3
+
+## 0.11.2
+
+## 0.11.1
+
+## 0.11.0
+
+### Minor Changes
+
+- 9cbb2a5: DB management is maturing; management is now done with explicit drizzle migrations; it is no longer recommended to use drizzle-kit push for db schema updates; recommendation is to use drizzle-kit migrate which will make databases more stable
+
+## 0.10.2
+
+## 0.10.1
+
+### Patch Changes
+
+- 974992c: context fetching span and ui trace improvements
+
+## 0.10.0
+
+### Minor Changes
+
+- d7fdb5c: Update oauth login and callback urls
+
+### Patch Changes
+
+- 7801b2c: improve credential store use for cloud deployments
+
+## 0.9.0
+
+### Minor Changes
+
+- 44178fc: Improve Visual Builder agent-tool relations, and bug fixes
+
+### Patch Changes
+
+- 6fb1e3d: fixes drizzle load from turso
+
+## 0.8.7
+
+## 0.8.6
+
+### Patch Changes
+
+- 2484a6c: Fix FetchDefiniton Credential References
+
+## 0.8.5
+
+### Patch Changes
+
+- 3c93e9e: configures drizzle with turso option
+
+## 0.8.4
+
+### Patch Changes
+
+- 9eebd7f: External Agent UI Enhancements
+
+## 0.8.3
+
+## 0.8.2
+
+### Patch Changes
+
+- 3a95469: changed artifact saving to be in-line
+- 3a95469: added default components for status
+- 3a95469: artifacts inline saving
+
+## 0.8.1
+
+### Patch Changes
+
+- dc19f1a: @agent-fabric/create-agents creates agent-fabric.config.ts in the correct location; model choice of user is respected and user choice replaces any model config from template; model config is done at project level instead of agent-fabric.config.ts which is reserved for tenant level settings
+- 2589d96: use turso if available
+
+## 0.8.0
+
+### Minor Changes
+
+- 853d431: adding headers to agent-tool relation
+
+## 0.7.2
+
+## 0.7.1
+
+## 0.7.0
+
+### Minor Changes
+
+- 77bd54d: Changing available tools implementation
+
+## 0.6.6
+
+## 0.6.5
+
+### Patch Changes
+
+- 936b7f7: Generate dts
+
+## 0.6.4
+
+## 0.6.3
+
+## 0.6.2
+
+### Patch Changes
+
+- d32d3bc: Template validation helper
+
+## 0.6.1
+
+## 0.6.0
+
+### Minor Changes
+
+- 9e04bb6: Agent Fabric CLI Project based push and pull functionality. Push and pull an entire project set of resources in one command line.
+
+## 0.5.0
+
+### Minor Changes
+
+- 45b3b91: Use Pino Logger
+
+## 0.4.0
+
+### Minor Changes
+
+- a379dec: Added env var loader to agents-cli package
+
+### Patch Changes
+
+- 0a8352f: Updates
+- 0a8352f: Added new providers
+
+## 0.3.0
+
+### Minor Changes
+
+- a7a5ca5: Proper assignment of agent framework resources to the correct project, graph, or agents scope
+
+## 0.2.2
+
+### Patch Changes
+
+- d445559: Global env configuration
+
+## 0.2.1
+
+## 0.2.0
+
+### Minor Changes
+
+- d2a0c0f: project resources and keytar
+
+## 0.1.10
+
+## 0.1.9
+
+### Patch Changes
+
+- 8528928: Public packages
+
+## 0.1.8
+
+## 0.1.7
+
+### Patch Changes
+
+- a5756dc: Update model config resolution
+- 8aff3c6: Remove cjs syntax
+- a0d8b97: public
+
+## 0.1.6
+
+### Patch Changes
+
+- 3c4fd25: Removed pull model configs.

@@ -1,0 +1,106 @@
+/**
+ * API Client for Evaluation Job Configs Operations
+ *
+ * This module provides HTTP client functions to communicate with the
+ * evaluations API endpoints for evaluation job configs.
+ */
+
+'use server';
+
+import { cache } from 'react';
+import type { ListResponse, SingleResponse } from '../types/response';
+import { makeManagementApiRequest } from './api-config';
+
+export interface EvaluationJobFilterCriteria {
+  datasetRunIds?: string[];
+  conversationIds?: string[];
+  dateRange?: {
+    startDate: string;
+    endDate: string;
+  };
+  [key: string]: unknown;
+}
+
+interface Filter<_T> {
+  [key: string]: unknown;
+}
+
+export interface EvaluationJobConfig {
+  id: string;
+  jobFilters?: Filter<EvaluationJobFilterCriteria> | null;
+  createdAt: string;
+  updatedAt: string;
+  tenantId: string;
+  projectId: string;
+}
+
+export interface EvaluationJobConfigInsert {
+  id?: string;
+  jobFilters?: Filter<EvaluationJobFilterCriteria> | null;
+  evaluatorIds?: string[];
+}
+
+export interface EvaluationJobConfigsResponse extends ListResponse<EvaluationJobConfig> {
+  datasetRunNames?: Record<string, string>;
+}
+
+export async function fetchEvaluationJobConfigs(
+  tenantId: string,
+  projectId: string
+): Promise<EvaluationJobConfigsResponse> {
+  return makeManagementApiRequest<EvaluationJobConfigsResponse>(
+    `tenants/${tenantId}/projects/${projectId}/evals/evaluation-job-configs`
+  );
+}
+
+/**
+ * Fetch a single evaluation job config by ID
+ */
+async function $fetchEvaluationJobConfig(
+  tenantId: string,
+  projectId: string,
+  configId: string
+): Promise<EvaluationJobConfig> {
+  const response = await makeManagementApiRequest<SingleResponse<EvaluationJobConfig>>(
+    `tenants/${tenantId}/projects/${projectId}/evals/evaluation-job-configs/${configId}`
+  );
+
+  return response.data;
+}
+
+export const fetchEvaluationJobConfig = cache($fetchEvaluationJobConfig);
+
+/**
+ * Create a new evaluation job config
+ */
+export async function createEvaluationJobConfig(
+  tenantId: string,
+  projectId: string,
+  config: EvaluationJobConfigInsert
+): Promise<EvaluationJobConfig> {
+  const response = await makeManagementApiRequest<SingleResponse<EvaluationJobConfig>>(
+    `tenants/${tenantId}/projects/${projectId}/evals/evaluation-job-configs`,
+    {
+      method: 'POST',
+      body: JSON.stringify(config),
+    }
+  );
+
+  return response.data;
+}
+
+/**
+ * Delete an evaluation job config
+ */
+export async function deleteEvaluationJobConfig(
+  tenantId: string,
+  projectId: string,
+  configId: string
+): Promise<void> {
+  await makeManagementApiRequest(
+    `tenants/${tenantId}/projects/${projectId}/evals/evaluation-job-configs/${configId}`,
+    {
+      method: 'DELETE',
+    }
+  );
+}

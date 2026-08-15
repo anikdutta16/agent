@@ -1,0 +1,92 @@
+# Agent Fabric
+
+Build AI Agents with a **No-Code Visual Builder** or **TypeScript SDK**. Agents can be edited in either with **full 2-way sync**, so technical and non-technical teams can create and manage Agents in one platform. 
+
+Get started with the [docs](https://localhost) or [1-minute quick start](https://localhost/get-started/quick-start).
+
+## Two ways to build
+
+### No-Code Visual Builder
+
+A drag-and-drop canvas so any team can create and own the Agents they care about.
+
+<img
+  src="agents-docs/public/gifs/drag-n-drop.gif"
+  alt="Visual Builder Demo"
+  width="100%"
+  style="border-radius: 10px"
+/>
+
+### TypeScript Agents SDK
+
+A code-first framework so engineering teams can build with typesafety, intellisense, CI/CD, and the tools they expect.
+
+```typescript
+import { agent, subAgent } from "@agent-fabric/agents-sdk";
+import { consoleMcp } from "./mcp";
+
+const helloAgent = subAgent({
+  id: "hello-agent",
+  name: "Hello Agent",
+  description: "Says hello",
+  canUse: () => [consoleMcp], 
+  prompt: `Reply to the user and console log "hello world" with fun variations like h3llo world`,
+});
+
+export const basicAgent = agent({
+  id: "basic-agent",
+  name: "Basic Agent",
+  description: "A basic agent",
+  defaultSubAgent: helloAgent,
+  subAgents: () => [helloAgent],
+});
+```
+
+The **Visual Builder and TypeScript SDK are fully interoperable**: technical and non-technical teams can edit and manage Agents in either format and collaborate with others at any time.
+
+## Use Cases
+
+Agent Fabric can operate as real-time **AI Chat Assistants**, for example:
+- a customer experience agent for help centers, technical docs, or in-app experiences
+- an internal copilot to assist your support, sales, marketing, ops, and other teams
+
+Agents can also be used for **AI Workflow Automation** like:
+- Creating and updating knowledge bases, documentation, and blogs
+- Updating CRMs, triaging helpdesk tickets, and tackling repetitive tasks
+
+## Platform Overview
+
+**Agent Fabric Open Source** includes:
+- A Visual Builder & TypeScript SDK with 2-way sync
+- Multi-agent architecture to support teams of agents
+- MCP Tools with credential management
+- A UI component library for dynamic chat experiences
+- Triggering Agents via MCP, A2A, & Vercel SDK APIs
+- Observability via a Traces UI & OpenTelemetry
+- Easy deployment using Vercel or Docker
+
+For a full overview, see the [Concepts](https://localhost/concepts) guide.
+
+Interested in a managed platform? Sign up for the [Agent Fabric Cloud waitlist](#) or learn about [Agent Fabric Enterprise](#).
+
+## Architecture
+
+The Agent Fabric Agent Platform is composed of several key services and libraries that work together:
+
+- **agents-api**: An API that handles configuration of Agents, Sub Agents, MCP Servers, Credentials, and Projects with a REST API. Additionally, it exposes Agent execution and evaluation. The API tracks conversation state and emits OTEL traces.
+- **agents-manage-ui**: Visual Builder web interface for creating and managing Agents. Writes to the `agents-api`.
+- **agents-sdk**: TypeScript SDK (`@agent-fabric/agents-sdk`) for declaratively defining Agents and custom tools in code. Writes to `agents-api`.
+- **agents-cli**: Includes various handy utilities, including `agent-fabric push` and `agent-fabric pull` which sync your TypeScript SDK code with the Visual Builder.
+- **agents-ui**: A UI component library of chat interfaces for embedding rich, dynamic conversational AI experiences in web apps.
+
+Under the hood, the framework uses the [Vercel AI SDK](https://ai-sdk.dev/docs/introduction) for interfacing with LLM providers, so it's compatible with Vercel's [`useChat`](https://ai-sdk.dev/docs/ai-sdk-ui) hook and other AI primatives.
+
+## License and Community
+
+The Agent Fabric is licensed under the **Elastic License 2.0** ([ELv2](https://www.elastic.co/licensing/elastic-license)) subject to **Agent Fabric's Supplemental Terms** ([SUPPLEMENTAL_TERMS.md](https://github.com/agent-fabric/agents/blob/main/SUPPLEMENTAL_TERMS.md)). This is a [fair-code](https://faircode.io/), source-available license that allows broad usage while protecting against certain competitive uses.
+
+Agent Fabric is designed to be extensible and open: use the LLM provider of your choice, use Agents via standard protocols, and easily deploy and self-host Agents in your own infra. 
+
+If you'd like to contribute, follow our [contribution guide](https://localhost/community/contributing/overview).
+
+[Join our community](https://localhost/community/agent-fabric-community) to get support, stay up to date, and share feedback.

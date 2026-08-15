@@ -1,0 +1,323 @@
+'use client';
+import { InkeepEmbeddedChat } from '@agent-fabric/agents-ui';
+import { type Dispatch, useEffect, useRef, useState } from 'react';
+import { DynamicComponentRenderer } from '@/components/dynamic-component-renderer';
+import type { ConversationDetail } from '@/components/traces/timeline/types';
+import { AGENT_FABRIC_BRAND_COLOR } from '@/constants/theme';
+import { useCopilotContext } from '@/contexts/copilot';
+import { usePostHog } from '@/contexts/posthog';
+import { useRuntimeConfig } from '@/contexts/runtime-config';
+import { useAuthSession } from '@/hooks/use-auth';
+import { useTempApiKey } from '@/hooks/use-temp-api-key';
+import { useDataComponentsQuery } from '@/lib/query/data-components';
+import { css } from '@/lib/utils';
+import { hideTaglineStyles } from '@/lib/widget-styles';
+import { ImproveDialog } from './improve-dialog';
+
+interface ChatWidgetProps {
+  agentId?: string;
+  projectId: string;
+  tenantId: string;
+  conversationId: string;
+  resetPlaygroundConversationId: () => void;
+  startPolling: () => void;
+  stopPolling: () => void;
+  customHeaders?: Record<string, string>;
+  chatActivities: ConversationDetail | null;
+  setShowTraces: Dispatch<boolean>;
+  hasHeadersError: boolean;
+}
+
+const styleOverrides = css`
+.ikp-ai-chat-wrapper {
+  height: 100%;
+  max-height: unset;
+  box-shadow: none;
+}
+
+.ikp-ai-chat-message-wrapper {
+  padding-top: 1rem;
+  padding-bottom: 1rem;
+}
+
+.ikp-markdown-code {
+  background-color: var(--ikp-color-gray-100);
+  color: var(--ikp-color-gray-900);
+}
+
+[data-theme=dark] .ikp-markdown-code {
+  background-color: var(--ikp-color-white-alpha-100);
+  color: var(--ikp-color-white-alpha-950);
+}
+`;
+
+const styleHeadersError = css`
+.ikp-ai-chat-input__fieldset {
+  border: 1px #ef4444 solid;
+  &:after {
+    content: 'Custom headers are invalid.';
+    position: absolute;
+    top: -30px;
+    font-size: 14px;
+    color: #ef4444;
+    display: block;
+  }
+}
+`;
+
+export function ChatWidget({
+  agentId,
+  projectId,
+  tenantId,
+  conversationId,
+  resetPlaygroundConversationId,
+  startPolling,
+  stopPolling,
+  customHeaders,
+  chatActivities,
+  setShowTraces,
+  hasHeadersError,
+}: ChatWidgetProps) {
+  const { PUBLIC_AGENT_FABRIC_AGENTS_API_URL } = useRuntimeConfig();
+  const copilotCtx = useCopilotContext();
+  const { data: dataComponents } = useDataComponentsQuery();
+  const [isImproveDialogOpen, setIsImproveDialogOpen] = useState(false);
+  const [messageId, setMessageId] = useState<string | undefined>(undefined);
+  const { user } = useAuthSession();
+
+  const {
+    apiKey: tempApiKey,
+    appId: playgroundAppId,
+    isLoading: isLoadingKey,
+    refresh: refreshToken,
+  } = useTempApiKey({
+    tenantId,
+    projectId,
+    agentId: agentId || '',
+    enabled: !!agentId,
+  });
+  const stopPollingTimeoutRef = useRef<number | null>(null);
+  const hasReceivedAssistantMessageRef = useRef(false);
+  const POLLING_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+  const posthog = usePostHog();
+
+  // Helper function to reset the stop polling timeout
+  function resetStopPollingTimeout() {
+    // Clear any existing timeout
+    if (stopPollingTimeoutRef.current) {
+      clearTimeout(stopPollingTimeoutRef.current);
+      stopPollingTimeoutRef.current = null;
+    }
+
+    // Set a new timeout for 5 minutes
+    stopPollingTimeoutRef.current = window.setTimeout(() => {
+      stopPolling();
+      stopPollingTimeoutRef.current = null;
+    }, POLLING_TIMEOUT_MS);
+  }
+
+  // Reset timeout when new activities come in AFTER assistant message received
+  // biome-ignore lint/correctness/useExhaustiveDependencies: activities length is intentionally tracked to reset timeout on new activities
+  useEffect(() => {
+    // Only reset timeout if we've already received the assistant message and new activities were added
+    if (hasReceivedAssistantMessageRef.current) {
+      resetStopPollingTimeout();
+    }
+  }, [
+    chatActivities?.activities?.length,
+    // biome-ignore lint/correctness/useExhaustiveDependencies: false positive, variable is stable and optimized by the React Compiler
+    resetStopPollingTimeout,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      if (stopPollingTimeoutRef.current) {
+        clearTimeout(stopPollingTimeoutRef.current);
+        stopPollingTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  // Don't render chat until we have the API key
+  if (isLoadingKey || !tempApiKey) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <p className="text-muted-foreground text-sm">
+          {isLoadingKey ? 'Initializing playground...' : 'Failed to initialize playground'}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-row gap-4">
+      <div className="flex-1 min-w-0 h-full">
+        <InkeepEmbeddedChat
+          baseSettings={{
+            shouldBypassCaptcha: true,
+            ...(playgroundAppId && tempApiKey
+              ? {
+                  getAuthToken: async () => {
+                    const token = await refreshToken();
+                    return token ?? tempApiKey;
+                  },
+                }
+              : {}),
+            async onEvent(event) {
+              posthog?.capture(event.eventName, {
+                ...event.properties,
+                source: 'playground_chat_widget',
+                tenantId,
+                projectId,
+                agentId,
+              });
+              if (event.eventName === 'assistant_message_received') {
+                // Mark that we've received the assistant message
+                hasReceivedAssistantMessageRef.current = true;
+                // Reset the timeout to 5 minutes after receiving an assistant message
+                resetStopPollingTimeout();
+              } else if (event.eventName === 'user_message_submitted') {
+                // Reset the flag
+                hasReceivedAssistantMessageRef.current = false;
+                // Cancel any pending stop polling timeout since we need to keep polling
+                if (stopPollingTimeoutRef.current) {
+                  clearTimeout(stopPollingTimeoutRef.current);
+                  stopPollingTimeoutRef.current = null;
+                }
+                startPolling();
+              } else if (event.eventName === 'chat_clear_button_clicked') {
+                // Reset the flag
+                hasReceivedAssistantMessageRef.current = false;
+                // Cancel any pending stop polling timeout
+                if (stopPollingTimeoutRef.current) {
+                  clearTimeout(stopPollingTimeoutRef.current);
+                  stopPollingTimeoutRef.current = null;
+                }
+                stopPolling();
+                resetPlaygroundConversationId();
+              }
+            },
+            userProperties: user
+              ? {
+                  id: user.id,
+                  email: user.email,
+                  name: user.name,
+                }
+              : undefined,
+            analyticsProperties: {
+              tenantId,
+              projectId,
+              agentId,
+            },
+            tags: ['playground_chat_widget'],
+            primaryBrandColor: AGENT_FABRIC_BRAND_COLOR,
+            colorMode: {
+              sync: {
+                target: document.documentElement,
+                attributes: ['class'],
+                isDarkMode: (attributes) => !!attributes?.class?.includes('dark'),
+              },
+            },
+            theme: {
+              styles: [
+                { key: 'custom-styles', type: 'style', value: styleOverrides },
+                hideTaglineStyles,
+                ...(hasHeadersError
+                  ? [{ key: 'chat-input-error', type: 'style' as const, value: styleHeadersError }]
+                  : []),
+              ],
+              primaryColors: {
+                textColorOnPrimary: '#ffffff',
+              },
+              colors: {
+                gray: {
+                  50: '#fafaf9',
+                  100: '#f4f4f3',
+                  200: '#eeeceb',
+                  300: '#dedbd9',
+                  400: '#cec7c2',
+                  500: '#a9a19a',
+                  600: '#75716b',
+                  700: '#58534e',
+                  800: '#443f3e',
+                  900: '#2b2826',
+                  950: '#1a1817',
+                  1000: '#080706',
+                },
+                grayDark: {
+                  950: 'oklch(0.141 0.005 285.823)',
+                },
+              },
+            },
+          }}
+          aiChatSettings={{
+            aiAssistantAvatar: {
+              light: '/assets/agent-fabric-icons/icon-blue.svg',
+              dark: '/assets/agent-fabric-icons/icon-sky.svg',
+            },
+            isChatHistoryButtonVisible: false,
+            isViewOnly: hasHeadersError,
+            conversationIdOverride: conversationId,
+            baseUrl: PUBLIC_AGENT_FABRIC_AGENTS_API_URL,
+            appId: playgroundAppId ?? undefined,
+            headers: {
+              'x-emit-operations': 'true',
+              ...customHeaders,
+            },
+            messageActions: [
+              ...(copilotCtx.isCopilotConfigured
+                ? [
+                    {
+                      label: 'Improve with AI',
+                      icon: { builtIn: 'LuSparkles' as const },
+                      action: {
+                        type: 'invoke_message_callback' as const,
+                        callback({ messageId }: { messageId?: string }) {
+                          setMessageId(messageId);
+                          setIsImproveDialogOpen(true);
+                        },
+                      },
+                    },
+                  ]
+                : []),
+            ],
+            components: new Proxy(
+              {},
+              {
+                get(_, componentName) {
+                  const matchingComponent = dataComponents.find(
+                    (component) => component.name === componentName && !!component.render?.component
+                  );
+
+                  if (!matchingComponent) {
+                    return undefined;
+                  }
+
+                  const Component = function Component(props: any) {
+                    return (
+                      <DynamicComponentRenderer
+                        code={matchingComponent.render?.component || ''}
+                        props={props || {}}
+                      />
+                    );
+                  };
+                  return Component;
+                },
+              }
+            ),
+            introMessage: 'Hi! How can I help?',
+          }}
+        />
+      </div>
+      {isImproveDialogOpen && (
+        <ImproveDialog
+          isOpen={isImproveDialogOpen}
+          onOpenChange={setIsImproveDialogOpen}
+          conversationId={conversationId}
+          messageId={messageId}
+          setShowTraces={setShowTraces}
+        />
+      )}
+    </div>
+  );
+}

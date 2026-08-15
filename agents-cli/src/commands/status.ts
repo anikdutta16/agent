@@ -1,0 +1,109 @@
+import chalk from 'chalk';
+import {
+  checkKeychainAvailability,
+  getCredentialExpiryInfo,
+  loadCredentials,
+} from '../utils/credentials';
+import { ProfileManager } from '../utils/profiles';
+
+export interface StatusOptions {
+  profile?: string;
+}
+
+export async function statusCommand(options: StatusOptions = {}): Promise<void> {
+  const profileManager = new ProfileManager();
+
+  // Resolve profile to use
+  let profileName: string;
+  let credentialKey: string;
+  let agentsApiUrl: string;
+  let manageUiUrl: string;
+  let environment: string;
+
+  try {
+    if (options.profile) {
+      const profile = profileManager.getProfile(options.profile);
+      if (!profile) {
+        console.error(chalk.red(`Profile '${options.profile}' not found.`));
+        console.log(chalk.gray('Run "agent-fabric profile list" to see available profiles.'));
+        process.exit(1);
+      }
+      profileName = options.profile;
+      credentialKey = profile.credential;
+      agentsApiUrl = profile.remote.api;
+      manageUiUrl = profile.remote.manageUi;
+      environment = profile.environment;
+    } else {
+      const activeProfile = profileManager.getActiveProfile();
+      profileName = activeProfile.name;
+      credentialKey = activeProfile.credential;
+      agentsApiUrl = activeProfile.remote.api;
+      manageUiUrl = activeProfile.remote.manageUi;
+      environment = activeProfile.environment;
+    }
+  } catch {
+    // No profile configured
+    console.log(chalk.yellow('No profile configured.'));
+    console.log(chalk.gray('Run "agent-fabric profile add" to create a profile.'));
+    console.log(chalk.gray('Or run "agent-fabric login" to authenticate with default settings.'));
+    return;
+  }
+
+  console.log();
+  console.log(chalk.bold('Current Profile:'), chalk.cyan(profileName));
+  console.log();
+
+  // Check keychain availability
+  const { available: keychainAvailable, reason } = await checkKeychainAvailability();
+
+  if (!keychainAvailable) {
+    console.log(chalk.bold('Auth:'), chalk.yellow('keychain unavailable'));
+    console.log(chalk.gray(`  Reason: ${reason || 'unknown'}`));
+    console.log(chalk.gray('  For CI/CD environments, use AGENT_FABRIC_API_KEY instead.'));
+    console.log();
+  } else {
+    // Check credentials
+    const credentials = await loadCredentials(credentialKey);
+
+    if (!credentials) {
+      console.log(chalk.bold('Auth:'), chalk.red('not authenticated'));
+      console.log(chalk.gray(`  Credential: ${credentialKey} (not found)`));
+      console.log(chalk.gray('  Run "agent-fabric login" to authenticate.'));
+      console.log();
+    } else {
+      const expiryInfo = getCredentialExpiryInfo(credentials);
+
+      if (expiryInfo.isExpired) {
+        console.log(chalk.bold('Auth:'), chalk.red('expired'));
+        console.log(chalk.gray(`  User: ${credentials.userEmail}`));
+        if (credentials.organizationName) {
+          console.log(chalk.gray(`  Organization: ${credentials.organizationName}`));
+        }
+        console.log(chalk.gray(`  Credential: ${credentialKey}`));
+        console.log(chalk.red('  Session expired. Run "agent-fabric login" to re-authenticate.'));
+        console.log();
+      } else {
+        const expiresText = expiryInfo.expiresIn
+          ? chalk.gray(` (expires in ${expiryInfo.expiresIn})`)
+          : '';
+        console.log(chalk.bold('Auth:'), chalk.green('authenticated') + expiresText);
+        console.log(chalk.gray(`  User: ${credentials.userEmail}`));
+        if (credentials.organizationName) {
+          console.log(chalk.gray(`  Organization: ${credentials.organizationName}`));
+        }
+        console.log(chalk.gray(`  Credential: ${credentialKey}`));
+        console.log();
+      }
+    }
+  }
+
+  // Show remote URLs
+  console.log(chalk.bold('Remote:'));
+  console.log(chalk.gray(`  Agents API:  ${agentsApiUrl}`));
+  console.log(chalk.gray(`  Manage UI:  ${manageUiUrl}`));
+  console.log();
+
+  // Show environment
+  console.log(chalk.bold('Environment:'), environment);
+  console.log();
+}

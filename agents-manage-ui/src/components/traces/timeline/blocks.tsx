@@ -1,0 +1,83 @@
+import { AnthropicIcon } from '@/components/icons/anthropic';
+import { GoogleIcon } from '@/components/icons/google';
+import { OpenAIIcon } from '@/components/icons/openai';
+import { Badge } from '@/components/ui/badge';
+import { ACTIVITY_STATUS, type ActivityItem } from './types';
+
+export function LabeledBlock({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <span className="text-sm font-medium text-foreground">{label}</span>
+      <div className="mt-1">{children}</div>
+    </div>
+  );
+}
+
+export function Section({ children }: { children: React.ReactNode }) {
+  return <div className="space-y-6">{children}</div>;
+}
+
+export function Divider() {
+  return <div className="mt-6 border-t border-border pt-4" />;
+}
+
+export function Info({ label, value }: { label: string; value?: React.ReactNode }) {
+  return (
+    <div>
+      <div className="text-sm font-medium text-foreground">{label}</div>
+      <p className="text-sm text-foreground mt-1">{value ?? '-'}</p>
+    </div>
+  );
+}
+
+export function StatusBadge({ status }: { status: ActivityItem['status'] }) {
+  const variant =
+    status === ACTIVITY_STATUS.SUCCESS
+      ? 'primary'
+      : status === ACTIVITY_STATUS.WARNING
+        ? 'warning'
+        : status === ACTIVITY_STATUS.PENDING
+          ? 'warning'
+          : 'error';
+
+  return (
+    <div>
+      <span className="text-sm font-medium text-foreground">Status</span>
+      <div className="mt-1">
+        <Badge className="uppercase" variant={variant}>
+          {status}
+        </Badge>
+        {status === ACTIVITY_STATUS.WARNING && (
+          <p className="text-xs text-muted-foreground mt-1.5">
+            This tool call failed but the agent later succeeded with another tool call to the same
+            MCP server.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function InfoRow({ label, value }: { label: string; value?: string | number }) {
+  return (
+    <div className="flex justify-between text-xs">
+      <span className="text-muted-foreground">{label}:</span>
+      <span className="font-mono font-medium text-foreground">{value ?? '-'}</span>
+    </div>
+  );
+}
+
+export function ModelBadge({ model }: { model: string }) {
+  return (
+    <Badge className="text-xs max-w-full flex-1" variant="code">
+      {model?.startsWith('gpt-') || model?.startsWith('openai/') ? (
+        <OpenAIIcon className="size-3 text-xs text-muted-foreground flex-shrink-0" />
+      ) : model?.startsWith('claude-') || model?.startsWith('anthropic/') ? (
+        <AnthropicIcon className="size-3 text-xs flex-shrink-0" />
+      ) : model?.startsWith('gemini-') || model?.startsWith('google/') ? (
+        <GoogleIcon className="size-3 text-xs flex-shrink-0" />
+      ) : null}
+      <span className="truncate w-full">{model}</span>
+    </Badge>
+  );
+}

@@ -1,0 +1,25 @@
+{
+  "name": "agents-cookbook-templates",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Template projects for the agents cookbook",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "knip": "knip --directory .. --workspace agents-cookbook --config agents-cookbook/knip.config.ts --dependencies",
+    "lint": "biome lint --error-on-warnings",
+    "lint:fix": "biome check --write",
+    "type-check": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@agent-fabric/agents-cli": "workspace:*",
+    "@agent-fabric/agents-core": "workspace:*",
+    "@agent-fabric/agents-sdk": "workspace:*",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.12",
+    "typescript": "^6.0.2"
+  }
+}

@@ -1,0 +1,120 @@
+'use client';
+
+import type { ApiProvider } from '@nangohq/types';
+import { Search } from 'lucide-react';
+import { useParams } from 'next/navigation';
+import { useState } from 'react';
+import { ProviderIcon } from '@/components/icons/provider-icon';
+import EmptyState from '@/components/layout/empty-state';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { CardTitle } from '@/components/ui/card';
+import { CardGrid } from '@/components/ui/card-grid';
+import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+
+interface NangoProvidersGridProps {
+  providers: ApiProvider[];
+}
+
+export function NangoProvidersGrid({ providers }: NangoProvidersGridProps) {
+  const [searchQuery, setSearchQuery] = useState('');
+  const { tenantId, projectId } = useParams<{
+    tenantId: string;
+    projectId: string;
+  }>();
+
+  const renderProviderHeader = (provider: ApiProvider) => (
+    <div className="flex items-center gap-3 overflow-hidden">
+      <ProviderIcon provider={provider.name} size={20} className="flex-shrink-0" />
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <CardTitle className="text-sm font-medium leading-tight truncate flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
+            {provider.display_name || provider.name}
+          </CardTitle>
+        </TooltipTrigger>
+        <TooltipContent>
+          <p>{provider.display_name || provider.name}</p>
+        </TooltipContent>
+      </Tooltip>
+    </div>
+  );
+
+  const renderProviderContent = (provider: ApiProvider) => (
+    <div className="pt-0">
+      {/* Provider Categories */}
+      {provider.categories && provider.categories.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {provider.categories.slice(0, 1).map((category) => (
+            <Badge key={category} variant="code" className="text-2xs uppercase border-0">
+              {category}
+            </Badge>
+          ))}
+          {provider.categories.length > 1 && (
+            <Badge variant="code" className="text-2xs text-muted-foreground uppercase border-0">
+              +{provider.categories.length - 1}
+            </Badge>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
+  // Pre-process searchable text for performance
+  const providersWithSearchText = providers.map((provider) => ({
+    ...provider,
+    searchText: [
+      provider.name.toLowerCase(),
+      provider.display_name?.toLowerCase() || '',
+      ...(provider.categories?.map((cat) => cat.toLowerCase()) || []),
+    ].join(' '),
+  }));
+
+  // Filter providers based on search query (now efficient)
+  const query = searchQuery.toLowerCase();
+  const filteredProviders = !searchQuery.trim()
+    ? providersWithSearchText
+    : providersWithSearchText.filter((provider) => provider.searchText.includes(query));
+
+  return (
+    <div className="space-y-6">
+      <InputGroup className="sm:max-w-md mx-auto">
+        <InputGroupInput
+          placeholder="Search providers (e.g., slack, github, zendesk)..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+        />
+        <InputGroupAddon>
+          <Search />
+        </InputGroupAddon>
+      </InputGroup>
+      {/* No results */}
+      {filteredProviders.length === 0 && searchQuery && (
+        <EmptyState
+          icon={<></>}
+          title="No providers found."
+          description={`No providers match "${searchQuery}". Try a different search term.`}
+          action={
+            <Button variant="outline" onClick={() => setSearchQuery('')}>
+              Clear search
+            </Button>
+          }
+        />
+      )}
+      {/* Provider grid */}
+      {filteredProviders.length > 0 && (
+        <CardGrid
+          cardClassName="py-4 shadow-none rounded-lg"
+          items={filteredProviders}
+          getKey={(provider) => provider.name}
+          getHref={(provider) =>
+            `/${tenantId}/projects/${projectId}/credentials/new/providers/${encodeURIComponent(provider.name)}`
+          }
+          renderHeader={renderProviderHeader}
+          renderContent={renderProviderContent}
+          gridClassName="grid gap-3 grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4"
+        />
+      )}
+    </div>
+  );
+}

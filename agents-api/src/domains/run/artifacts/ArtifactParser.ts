@@ -1,0 +1,652 @@
+import type { ArtifactComponentApiInsert, FullExecutionContext } from '@agent-fabric/agents-core';
+import { getLogger } from '../../../logger';
+import { REFS_KEY, SENTINEL_KEY } from '../constants/artifact-syntax';
+import {
+  buildSchemaShape,
+  type ExtendedJsonSchema,
+  extractFullFields,
+  extractPreviewFields,
+} from '../utils/schema-validation';
+import { applySelector } from '../utils/select-filter';
+import {
+  type ArtifactCreateRequest,
+  ArtifactService,
+  type ArtifactServiceContext,
+  type ArtifactSummaryData,
+} from './ArtifactService';
+import { ARTIFACT_CREATE_PREFIX } from './artifact-component-schema';
+
+const logger = getLogger('ArtifactParser');
+
+export class ToolChainResolutionError extends Error {
+  constructor(
+    public readonly toolCallId: string,
+    message: string
+  ) {
+    super(message);
+    this.name = 'ToolChainResolutionError';
+  }
+}
+
+export interface StreamPart {
+  kind: 'text' | 'data';
+  text?: string;
+  data?: any;
+}
+
+export type ArtifactData = {
+  artifactId: string;
+  toolCallId: string;
+  name: string;
+  description: string;
+  type: string;
+  summary: Record<string, any>;
+};
+
+export type { ArtifactFullData, ArtifactSummaryData } from './ArtifactService';
+
+export interface ArtifactCreateAnnotation {
+  artifactId: string;
+  toolCallId: string;
+  type: string;
+  baseSelector: string;
+  detailsSelector?: Record<string, string>;
+  raw?: string; // Raw annotation text for debugging
+}
+
+/**
+ * Artifact parser focused on parsing and text processing responsibilities
+ * Delegates business logic operations to ArtifactService
+ * Handles artifact tag detection, parsing, and text boundary detection
+ */
+export class ArtifactParser {
+  private static readonly ARTIFACT_CHECK_REGEX =
+    /<artifact:ref\s+(?=.*id=['"][^'"]+['"])(?=.*tool=['"][^'"]+['"])[^>]*\/>/;
+  private static readonly ATTR_REGEX = /(\w+)="([^"]*)"|(\w+)='([^']*)'|(\w+)=({[^}]+})/g;
+
+  private static readonly ARTIFACT_PATTERNS = [
+    '<a',
+    '<ar',
+    '<art',
+    '<arti',
+    '<artif',
+    '<artifa',
+    '<artifac',
+    '<artifact',
+    '<artifact:',
+    '<artifact:r',
+    '<artifact:re',
+    '<artifact:ref',
+    '<artifact:c',
+    '<artifact:cr',
+    '<artifact:cre',
+    '<artifact:crea',
+    '<artifact:creat',
+    '<artifact:create',
+  ];
+  private static readonly INCOMPLETE_CREATE_REGEX =
+    /<artifact:create(?!(?:"[^"]*"|'[^']*'|[^>])*(?:\/>|<\/artifact:create>))/;
+
+  private artifactService: ArtifactService;
+  private contextWindowSize?: number;
+  private artifactSchemasByType: Record<
+    string,
+    { preview: Record<string, unknown>; full: Record<string, unknown> }
+  > = {};
+
+  constructor(
+    executionContext: FullExecutionContext,
+    options?: {
+      sessionId?: string;
+      taskId?: string;
+      projectId?: string;
+      contextId?: string;
+      artifactComponents?: ArtifactComponentApiInsert[];
+      streamRequestId?: string;
+      subAgentId?: string;
+      artifactService?: ArtifactService; // Allow passing existing ArtifactService
+      contextWindowSize?: number;
+    }
+  ) {
+    this.contextWindowSize = options?.contextWindowSize;
+    if (options?.artifactService) {
+      this.artifactService = options.artifactService;
+    } else {
+      const context: ArtifactServiceContext = {
+        executionContext,
+        ...options,
+      };
+      this.artifactService = new ArtifactService(context);
+    }
+    if (options?.artifactComponents) {
+      for (const ac of options.artifactComponents) {
+        if (ac.name && (ac.props as any)?.properties) {
+          const previewSchema = extractPreviewFields(ac.props as ExtendedJsonSchema);
+          const fullSchema = extractFullFields(ac.props as ExtendedJsonSchema);
+          this.artifactSchemasByType[ac.name] = {
+            preview: previewSchema.properties ? buildSchemaShape(previewSchema.properties) : {},
+            full: fullSchema.properties ? buildSchemaShape(fullSchema.properties) : {},
+          };
+        }
+      }
+    }
+  }
+
+  /**
+   * Set the context window size for oversized artifact detection
+   */
+  setContextWindowSize(size: number): void {
+    this.contextWindowSize = size;
+  }
+
+  private buildArtifactDataPart(artifactData: ArtifactSummaryData): StreamPart {
+    const schemas = this.artifactSchemasByType[artifactData.type ?? ''];
+    return {
+      kind: 'data',
+      data: {
+        artifactId: artifactData.artifactId,
+        toolCallId: artifactData.toolCallId,
+        name: artifactData.name,
+        description: artifactData.description,
+        type: artifactData.type,
+        artifactSummary: artifactData.data,
+        ...(schemas && { typeSchema: schemas }),
+      },
+    };
+  }
+
+  /**
+   * Check if text contains complete artifact markers (ref or create)
+   */
+  hasArtifactMarkers(text: string): boolean {
+    const refMatch = ArtifactParser.ARTIFACT_CHECK_REGEX.test(text);
+
+    const createRegex =
+      /<artifact:create\s+((?:"[^"]*"|'[^']*'|[^>])+?)(?:\s*\/)?>(?:(.*?)<\/artifact:create>)?/gs;
+    const createMatch = createRegex.test(text);
+
+    return refMatch || createMatch;
+  }
+
+  /**
+   * Check if text has incomplete artifact marker (for streaming)
+   * More robust detection that handles streaming fragments
+   */
+  hasIncompleteArtifact(text: string): boolean {
+    const endsWithPattern = ArtifactParser.ARTIFACT_PATTERNS.some((pattern) =>
+      text.endsWith(pattern)
+    );
+
+    return (
+      endsWithPattern ||
+      /<artifact:ref[^>]+$/.test(text) || // Incomplete artifact ref at end
+      /<artifact:create(?:"[^"]*"|'[^']*'|[^>])*$/.test(text) || // Incomplete artifact create at end
+      (ArtifactParser.INCOMPLETE_CREATE_REGEX.test(text) && !text.includes('</artifact:create>')) ||
+      this.findSafeTextBoundary(text) < text.length
+    );
+  }
+
+  /**
+   * Find safe text boundary before incomplete artifacts (for streaming)
+   * Enhanced to handle streaming chunks that split in the middle of artifacts
+   */
+  findSafeTextBoundary(text: string): number {
+    const endPatterns = [
+      /<artifact:ref(?![^>]*\/>).*$/, // artifact:ref that doesn't end with />
+      /<artifact:create(?!(?:"[^"]*"|'[^']*'|[^>])*(?:\/>|<\/artifact:create>)).*$/, // incomplete artifact:create
+    ];
+
+    for (const pattern of endPatterns) {
+      const match = text.match(pattern);
+      if (match && match.index !== undefined) {
+        return match.index;
+      }
+    }
+
+    for (const pattern of ArtifactParser.ARTIFACT_PATTERNS) {
+      const lastIndex = text.lastIndexOf(pattern);
+      if (lastIndex !== -1) {
+        const textAfterPattern = text.slice(lastIndex);
+        if (!textAfterPattern.includes('/>') && !textAfterPattern.includes('</artifact:')) {
+          return lastIndex;
+        }
+      }
+    }
+
+    return text.length;
+  }
+
+  /**
+   * Get all artifacts for a context - delegates to service
+   */
+  async getContextArtifacts(contextId: string): Promise<Map<string, any>> {
+    return this.artifactService.getContextArtifacts(contextId);
+  }
+
+  /**
+   * Resolve a single reference object (artifact or tool result).
+   */
+  private async resolveRef(ref: any): Promise<any> {
+    if (
+      typeof ref[SENTINEL_KEY.ARTIFACT] === 'string' &&
+      typeof ref[SENTINEL_KEY.TOOL] === 'string'
+    ) {
+      const fullData = await this.artifactService.getArtifactFull(
+        ref[SENTINEL_KEY.ARTIFACT],
+        ref[SENTINEL_KEY.TOOL]
+      );
+      if (fullData?.data) {
+        logger.debug(
+          { artifactId: ref[SENTINEL_KEY.ARTIFACT], toolCallId: ref[SENTINEL_KEY.TOOL] },
+          'Resolved artifact ref'
+        );
+        let data = fullData.data;
+        if (typeof ref[SENTINEL_KEY.SELECT] === 'string') {
+          data = applySelector(data, ref[SENTINEL_KEY.SELECT], ref[SENTINEL_KEY.TOOL]);
+        }
+        return data;
+      }
+      throw new ToolChainResolutionError(
+        ref[SENTINEL_KEY.TOOL],
+        `Artifact '${ref[SENTINEL_KEY.ARTIFACT]}' from tool call '${ref[SENTINEL_KEY.TOOL]}' could not be resolved`
+      );
+    }
+
+    if (typeof ref[SENTINEL_KEY.TOOL] === 'string') {
+      const hasSelect = typeof ref[SENTINEL_KEY.SELECT] === 'string';
+      const raw = hasSelect
+        ? this.artifactService.getToolResultFull(ref[SENTINEL_KEY.TOOL])
+        : this.artifactService.getToolResultRaw(ref[SENTINEL_KEY.TOOL]);
+      if (raw !== undefined) {
+        logger.debug({ toolCallId: ref[SENTINEL_KEY.TOOL] }, 'Resolved ephemeral tool result ref');
+        let data: unknown = raw;
+        if (hasSelect) {
+          data = applySelector(data, ref[SENTINEL_KEY.SELECT], ref[SENTINEL_KEY.TOOL]);
+        }
+        return data;
+      }
+      throw new ToolChainResolutionError(
+        ref[SENTINEL_KEY.TOOL],
+        `Tool result for call '${ref[SENTINEL_KEY.TOOL]}' not found or failed`
+      );
+    }
+
+    return ref;
+  }
+
+  /**
+   * Resolve artifact/tool-result refs embedded in tool call arguments.
+   * Handles the `SENTINEL_KEY.REFS` map format (preferred) and legacy per-property refs.
+   */
+  async resolveArgs(args: any): Promise<any> {
+    if (args !== null && typeof args === 'object' && !Array.isArray(args)) {
+      // Handle SENTINEL_KEY.REFS map: resolve each entry and merge into args
+      if (args[REFS_KEY] && typeof args[REFS_KEY] === 'object') {
+        const refs = args[REFS_KEY] as Record<string, any>;
+        const result: Record<string, any> = {};
+        for (const [key, value] of Object.entries(args)) {
+          if (key !== REFS_KEY) {
+            result[key] = await this.resolveArgs(value);
+          }
+        }
+        for (const [paramName, ref] of Object.entries(refs)) {
+          result[paramName] = await this.resolveRef(ref);
+          logger.debug({ paramName }, `Resolved ${REFS_KEY} entry`);
+        }
+        return result;
+      }
+
+      // Legacy: top-level artifact ref
+      if (
+        typeof args[SENTINEL_KEY.ARTIFACT] === 'string' &&
+        typeof args[SENTINEL_KEY.TOOL] === 'string'
+      ) {
+        return this.resolveRef(args);
+      }
+
+      // Legacy: top-level tool result ref
+      if (typeof args[SENTINEL_KEY.TOOL] === 'string' && !(SENTINEL_KEY.ARTIFACT in args)) {
+        return this.resolveRef(args);
+      }
+
+      // Recursively resolve nested args (legacy per-property refs)
+      const result: Record<string, any> = {};
+      for (const [key, value] of Object.entries(args)) {
+        result[key] = await this.resolveArgs(value);
+      }
+      return result;
+    }
+
+    if (Array.isArray(args)) {
+      const resolved = [];
+      for (const item of args) {
+        resolved.push(await this.resolveArgs(item));
+      }
+      return resolved;
+    }
+
+    return args;
+  }
+
+  /** Parse an artifact-tag attribute string into a plain key→value record. */
+  private static parseAttrs(attrString: string): Record<string, any> {
+    const attrs: Record<string, any> = {};
+    let match: RegExpExecArray | null = null;
+
+    ArtifactParser.ATTR_REGEX.lastIndex = 0;
+    while ((match = ArtifactParser.ATTR_REGEX.exec(attrString)) !== null) {
+      const key = match[1] || match[3] || match[5];
+      let value = match[2] || match[4] || match[6];
+
+      if (value?.startsWith('{')) {
+        try {
+          value = JSON.parse(value);
+        } catch {}
+      }
+
+      attrs[key] = value;
+    }
+
+    return attrs;
+  }
+
+  /**
+   * Parse attributes from the artifact:create tag
+   */
+  private static parseCreateAttributes(attrString: string): ArtifactCreateAnnotation | null {
+    const attrs = ArtifactParser.parseAttrs(attrString);
+
+    if (!attrs.id || !attrs.tool || !attrs.type || !attrs.base) {
+      logger.warn({ attrs, attrString }, 'Missing required attributes in artifact annotation');
+      return null;
+    }
+
+    return {
+      artifactId: attrs.id,
+      toolCallId: attrs.tool,
+      type: attrs.type,
+      baseSelector: attrs.base,
+      detailsSelector: attrs.details || {},
+    };
+  }
+
+  /**
+   * Parse artifact:create annotations from text. Static so output-contract
+   * enforcement can detect marker-created artifacts without re-implementing the
+   * parse — see getContractViolation.
+   */
+  static parseCreateAnnotations(text: string): ArtifactCreateAnnotation[] {
+    const annotations: ArtifactCreateAnnotation[] = [];
+
+    const createRegex =
+      /<artifact:create\s+((?:"[^"]*"|'[^']*'|[^>])+?)(?:\s*\/)?>(?:(.*?)<\/artifact:create>)?/gs;
+
+    const matches = [...text.matchAll(createRegex)];
+
+    for (const match of matches) {
+      const [fullMatch, attributes] = match;
+      const annotation = ArtifactParser.parseCreateAttributes(attributes);
+      if (annotation) {
+        annotation.raw = fullMatch;
+        annotations.push(annotation);
+      }
+    }
+
+    return annotations;
+  }
+
+  /**
+   * Extract the artifact ids from `<artifact:ref>` markers in text. Static so
+   * output-contract enforcement can detect referenced artifacts (D-K) without
+   * re-implementing the marker parse.
+   */
+  static parseRefIds(text: string): string[] {
+    const ids: string[] = [];
+    const refRegex = /<artifact:ref\s+((?:"[^"]*"|'[^']*'|[^>])+?)(?:\s*\/)?>/g;
+    for (const match of text.matchAll(refRegex)) {
+      const attrs = ArtifactParser.parseAttrs(match[1] ?? '');
+      if (typeof attrs.id === 'string') {
+        ids.push(attrs.id);
+      }
+    }
+    return ids;
+  }
+
+  /**
+   * Extract artifact data from a create annotation - delegates to service
+   */
+  private async extractFromCreateAnnotation(
+    annotation: ArtifactCreateAnnotation,
+    subAgentId?: string
+  ): Promise<ArtifactSummaryData | null> {
+    const request: ArtifactCreateRequest = {
+      artifactId: annotation.artifactId,
+      toolCallId: annotation.toolCallId,
+      type: annotation.type,
+      baseSelector: annotation.baseSelector,
+      detailsSelector: annotation.detailsSelector,
+    };
+
+    return this.artifactService.createArtifact(request, subAgentId, this.contextWindowSize);
+  }
+
+  /**
+   * Parse text with artifact markers into parts array
+   * Handles both artifact:ref and artifact:create tags
+   * Can work with or without pre-fetched artifact map
+   */
+  async parseText(
+    text: string,
+    artifactMap?: Map<string, any>,
+    subAgentId?: string
+  ): Promise<StreamPart[]> {
+    let processedText = text;
+    const createAnnotations = ArtifactParser.parseCreateAnnotations(text);
+
+    const createdArtifactData = new Map<string, ArtifactSummaryData>();
+    const failedAnnotations: string[] = [];
+
+    for (const annotation of createAnnotations) {
+      try {
+        const artifactData = await this.extractFromCreateAnnotation(annotation, subAgentId);
+
+        if (artifactData && annotation.raw) {
+          createdArtifactData.set(annotation.raw, artifactData);
+        } else if (annotation.raw) {
+          failedAnnotations.push(
+            `Failed to create artifact "${annotation.artifactId}": Missing or invalid data`
+          );
+          processedText = processedText.replace(annotation.raw, '');
+          logger.warn(
+            { annotation, artifactData },
+            'Removed failed artifact:create annotation from output'
+          );
+        }
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+        failedAnnotations.push(`Failed to create artifact "${annotation.artifactId}": ${errorMsg}`);
+
+        if (annotation.raw) {
+          processedText = processedText.replace(annotation.raw, '');
+        }
+        logger.error({ annotation, error }, 'Failed to extract artifact from create annotation');
+      }
+    }
+
+    if (failedAnnotations.length > 0) {
+      logger.warn(
+        {
+          failedCount: failedAnnotations.length,
+          failures: failedAnnotations,
+        },
+        'Some artifact creation attempts failed'
+      );
+    }
+
+    const parts: StreamPart[] = [];
+
+    const createRegex =
+      /<artifact:create\s+((?:"[^"]*"|'[^']*'|[^>])+?)(?:\s*\/)?>(?:(.*?)<\/artifact:create>)?/gs;
+    const refRegex = /<artifact:ref\s+id=(["'])([^"']*?)\1\s+tool=(["'])([^"']*?)\3\s*\/>/gs;
+
+    const createMatches = [...text.matchAll(createRegex)];
+    const refMatches = [...processedText.matchAll(refRegex)];
+
+    const allMatches: Array<{ match: RegExpMatchArray; type: 'create' | 'ref' }> = [
+      ...createMatches.map((match) => ({ match, type: 'create' as const })),
+      ...refMatches.map((match) => ({ match, type: 'ref' as const })),
+    ].sort((a, b) => (a.match.index || 0) - (b.match.index || 0));
+
+    if (allMatches.length === 0) {
+      return [{ kind: 'text', text: processedText }];
+    }
+
+    let lastIndex = 0;
+
+    for (const { match, type } of allMatches) {
+      if (match.index === undefined) continue;
+      const matchStart = match.index;
+      const fullMatch = match[0];
+
+      if (matchStart > lastIndex) {
+        const textBefore = text.slice(lastIndex, matchStart);
+        if (textBefore) {
+          parts.push({ kind: 'text', text: textBefore });
+        }
+      }
+
+      let artifactData: ArtifactSummaryData | null = null;
+
+      if (type === 'create') {
+        artifactData = createdArtifactData.get(fullMatch) || null;
+      } else {
+        const [, , artifactId, , toolCallId] = match;
+        artifactData = await this.getArtifactData(artifactId, toolCallId, artifactMap);
+      }
+
+      if (artifactData) {
+        parts.push(this.buildArtifactDataPart(artifactData));
+      }
+
+      lastIndex = matchStart + fullMatch.length;
+    }
+
+    if (lastIndex < text.length) {
+      const remainingText = text.slice(lastIndex);
+      if (remainingText) {
+        parts.push({ kind: 'text', text: remainingText });
+      }
+    }
+
+    return parts;
+  }
+
+  /**
+   * Process object/dataComponents for artifact components
+   */
+  async parseObject(
+    obj: any,
+    artifactMap?: Map<string, any>,
+    subAgentId?: string
+  ): Promise<StreamPart[]> {
+    if (obj?.dataComponents && Array.isArray(obj.dataComponents)) {
+      const parts: StreamPart[] = [];
+
+      for (const component of obj.dataComponents) {
+        if (this.isArtifactComponent(component)) {
+          const artifactData = await this.getArtifactData(
+            component.props.artifact_id,
+            component.props.tool_call_id,
+            artifactMap
+          );
+          if (artifactData) {
+            parts.push(this.buildArtifactDataPart(artifactData));
+          }
+        } else if (this.isArtifactCreateComponent(component)) {
+          const createData = await this.extractFromArtifactCreateComponent(component, subAgentId);
+          if (createData) {
+            parts.push(this.buildArtifactDataPart(createData));
+          }
+        } else {
+          // Strip null values from optional fields before emitting. The schema allows null
+          // (so LLMs can express "not applicable" for optional fields), but downstream
+          // consumers expect absent keys rather than explicit nulls.
+          const cleanProps = Object.fromEntries(
+            Object.entries(component.props ?? {}).filter(([, v]) => v !== null)
+          );
+          parts.push({ kind: 'data', data: { ...component, props: cleanProps } });
+        }
+      }
+
+      return parts;
+    }
+
+    if (this.isArtifactComponent(obj)) {
+      const artifactData = await this.getArtifactData(
+        obj.props.artifact_id,
+        obj.props.tool_call_id,
+        artifactMap
+      );
+      return artifactData ? [this.buildArtifactDataPart(artifactData)] : [];
+    }
+
+    if (this.isArtifactCreateComponent(obj)) {
+      const createData = await this.extractFromArtifactCreateComponent(obj, subAgentId);
+      return createData ? [this.buildArtifactDataPart(createData)] : [];
+    }
+
+    return [{ kind: 'data', data: obj }];
+  }
+
+  /**
+   * Check if object is an artifact component
+   */
+  private isArtifactComponent(obj: any): boolean {
+    return obj?.name === 'Artifact' && obj?.props?.artifact_id && obj?.props?.tool_call_id;
+  }
+
+  /**
+   * Check if object is an artifact create component
+   */
+  private isArtifactCreateComponent(obj: any): boolean {
+    return (
+      obj?.name?.startsWith(ARTIFACT_CREATE_PREFIX) &&
+      obj?.props?.artifact_id &&
+      obj?.props?.tool_call_id
+    );
+  }
+
+  /**
+   * Extract artifact from ArtifactCreate component
+   */
+  private async extractFromArtifactCreateComponent(
+    component: any,
+    subAgentId?: string
+  ): Promise<ArtifactSummaryData | null> {
+    const props = component.props;
+    if (!props) {
+      return null;
+    }
+
+    const annotation: ArtifactCreateAnnotation = {
+      artifactId: props.artifact_id,
+      toolCallId: props.tool_call_id,
+      type: component.name.slice(ARTIFACT_CREATE_PREFIX.length),
+      baseSelector: props.base_selector,
+      detailsSelector: props.details_selector || {},
+    };
+
+    return await this.extractFromCreateAnnotation(annotation, subAgentId);
+  }
+
+  /**
+   * Get artifact data - delegates to service
+   */
+  private async getArtifactData(
+    artifactId: string,
+    toolCallId: string,
+    artifactMap?: Map<string, any>
+  ): Promise<ArtifactSummaryData | null> {
+    return await this.artifactService.getArtifactSummary(artifactId, toolCallId, artifactMap);
+  }
+}

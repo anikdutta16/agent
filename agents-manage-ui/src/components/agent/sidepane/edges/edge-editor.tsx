@@ -1,0 +1,412 @@
+import { type Edge, useNodesData, useReactFlow } from '@xyflow/react';
+import { Spline, Trash2 } from 'lucide-react';
+import { toast } from 'sonner';
+import { isNodeType, NodeType } from '@/components/agent/configuration/node-types';
+import { DashedSplineIcon } from '@/components/icons/dashed-spline';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Label } from '@/components/ui/label';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Separator } from '@/components/ui/separator';
+import { useFullAgentFormContext } from '@/contexts/full-agent-form';
+import { useAgentActions } from '@/features/agent/state/use-agent-store';
+import { useProjectPermissionsQuery } from '@/lib/query/projects';
+import { getCycleErrorMessage, wouldCreateCycle } from '@/lib/utils/cycle-detection';
+import type { A2AEdgeData } from '../../configuration/edge-types';
+
+type RelationshipOptionProps = {
+  id: string;
+  label: string | React.ReactNode;
+  onCheckedChange: (id: string, checked: boolean) => void;
+  checked: boolean;
+};
+
+const REMOVE_DELEGATION_OPTION_ID = 'none';
+
+function RelationshipOption({ id, label, onCheckedChange, checked }: RelationshipOptionProps) {
+  return (
+    <div className="flex items-start gap-3">
+      <Checkbox
+        id={id}
+        onCheckedChange={(checked) => onCheckedChange(id, checked as boolean)}
+        checked={checked}
+        className="mt-[5px]"
+      />
+      <div className="grid gap-2">
+        <Label htmlFor={id} className="font-normal">
+          {label}
+        </Label>
+      </div>
+    </div>
+  );
+}
+
+type RelationshipSectionProps = {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  options: Array<{ id: string; label: string | React.ReactNode }>;
+  onCheckedChange: (id: string, checked: boolean) => void;
+  checkedValues: A2AEdgeData['relationships'];
+  useRadio?: boolean;
+  onRadioChange?: (value: string) => void;
+  defaultRadioValue?: string;
+};
+
+function RelationshipSection({
+  icon,
+  title,
+  description,
+  options,
+  onCheckedChange,
+  checkedValues,
+  useRadio = false,
+  onRadioChange,
+  defaultRadioValue,
+}: RelationshipSectionProps) {
+  const getRadioValue = () => {
+    const checkedOption = options.find(
+      (opt) =>
+        (!defaultRadioValue || opt.id !== defaultRadioValue) &&
+        checkedValues?.[opt.id as keyof A2AEdgeData['relationships']]
+    );
+    if (checkedOption) {
+      return checkedOption.id;
+    }
+    // If no option is checked, return defaultRadioValue if it exists in options
+    if (defaultRadioValue) {
+      const defaultOption = options.find((opt) => opt.id === defaultRadioValue);
+      return defaultOption ? defaultRadioValue : '';
+    }
+    return '';
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          {icon}
+          <h3 className="font-semibold text-sm">{title}</h3>
+        </div>
+        <p className="text-muted-foreground text-sm">{description}</p>
+      </div>
+      {useRadio && onRadioChange ? (
+        <RadioGroup value={getRadioValue()} onValueChange={onRadioChange}>
+          {options.map((option) => (
+            <div key={option.id} className="flex items-start gap-3">
+              <RadioGroupItem value={option.id} id={option.id} className="mt-[5px]" />
+              <div className="grid gap-2">
+                <Label htmlFor={option.id} className="font-normal">
+                  {option.label}
+                </Label>
+              </div>
+            </div>
+          ))}
+        </RadioGroup>
+      ) : (
+        options.map((option) => (
+          <RelationshipOption
+            key={option.id}
+            id={option.id}
+            label={option.label}
+            onCheckedChange={onCheckedChange}
+            checked={checkedValues?.[option.id as keyof A2AEdgeData['relationships']] || false}
+          />
+        ))
+      )}
+    </div>
+  );
+}
+
+interface EdgeEditorProps {
+  selectedEdge: Edge;
+}
+
+function EdgeEditor({ selectedEdge }: EdgeEditorProps) {
+  const { updateEdgeData, setEdges, deleteElements, getEdges } = useReactFlow();
+  const form = useFullAgentFormContext();
+
+  const {
+    data: { canEdit },
+  } = useProjectPermissionsQuery();
+
+  function deleteEdge() {
+    deleteElements({ edges: [{ id: selectedEdge.id }] });
+  }
+
+  const sourceNode = useNodesData(selectedEdge.source);
+  const targetNode = useNodesData(selectedEdge.target);
+  const { markUnsaved } = useAgentActions();
+
+  const isSelfLoop = selectedEdge.source === selectedEdge.target;
+
+  function getNodeLabel(node: typeof sourceNode | typeof targetNode) {
+    if (!node) {
+      return;
+    }
+
+    if (isNodeType(node, NodeType.SubAgent)) {
+      return form.getValues(`subAgents.${node.id}.name`);
+    }
+
+    if (isNodeType(node, NodeType.ExternalAgent)) {
+      return form.getValues(`externalAgents.${node.data.externalAgentId}.name`);
+    }
+
+    if (isNodeType(node, NodeType.TeamAgent)) {
+      return form.getValues(`teamAgents.${node.data.teamAgentId}.name`);
+    }
+
+    if (isNodeType(node, NodeType.MCP)) {
+      return form.getValues(`tools.${node.data.toolId}.name`);
+    }
+
+    if (isNodeType(node, NodeType.FunctionTool)) {
+      return form.getValues(`functionTools.${node.data.toolId}.name`);
+    }
+
+    return node.id;
+  }
+
+  const checkForCycle = (delegateId: string): boolean => {
+    const source =
+      delegateId === 'delegateSourceToTarget' ? selectedEdge.source : selectedEdge.target;
+    const target =
+      delegateId === 'delegateSourceToTarget' ? selectedEdge.target : selectedEdge.source;
+
+    const allEdges = getEdges();
+    const otherEdges = allEdges.filter((edge) => edge.id !== selectedEdge.id);
+
+    if (wouldCreateCycle(otherEdges, { source, target })) {
+      const sourceName = getNodeLabel(sourceNode);
+      const targetName = getNodeLabel(targetNode);
+      const sourceLabel = delegateId === 'delegateSourceToTarget' ? sourceName : targetName;
+      const targetLabel = delegateId === 'delegateSourceToTarget' ? targetName : sourceName;
+
+      toast.error('Circular Delegation Detected', {
+        description: getCycleErrorMessage(sourceLabel ?? '', targetLabel ?? ''),
+      });
+      return true;
+    }
+    return false;
+  };
+
+  const updateRelationships = (newRelationships: A2AEdgeData['relationships']) => {
+    const hasAnyRelationship =
+      newRelationships.transferSourceToTarget ||
+      newRelationships.transferTargetToSource ||
+      newRelationships.delegateSourceToTarget ||
+      newRelationships.delegateTargetToSource;
+
+    markUnsaved();
+
+    if (!hasAnyRelationship) {
+      setEdges((edges) => edges.filter((edge) => edge.id !== selectedEdge.id));
+    } else {
+      updateEdgeData(selectedEdge.id, { relationships: newRelationships });
+    }
+  };
+
+  const handleCheckboxChange = (id: string, checked: boolean) => {
+    // Calculate the new relationships state
+    let newRelationships: A2AEdgeData['relationships'];
+
+    if (isSelfLoop) {
+      // For self-loops, when we toggle the checkbox, we should set both directions
+      // to maintain consistency (a self-loop is inherently bidirectional)
+      const updates: Partial<A2AEdgeData['relationships']> = {};
+      if (id === 'transferSourceToTarget') {
+        updates.transferSourceToTarget = checked;
+        updates.transferTargetToSource = checked;
+      } else if (id === 'delegateSourceToTarget') {
+        updates.delegateSourceToTarget = checked;
+        updates.delegateTargetToSource = checked;
+      }
+      newRelationships = {
+        ...(selectedEdge.data?.relationships as A2AEdgeData['relationships']),
+        ...updates,
+      };
+    } else {
+      const updates: Partial<A2AEdgeData['relationships']> = { [id]: checked };
+
+      // Prevent two-way delegation: when enabling one delegation direction, disable the opposite
+      if (checked) {
+        if (id === 'delegateSourceToTarget') {
+          updates.delegateTargetToSource = false;
+        } else if (id === 'delegateTargetToSource') {
+          updates.delegateSourceToTarget = false;
+        }
+      }
+
+      newRelationships = {
+        ...(selectedEdge.data?.relationships as A2AEdgeData['relationships']),
+        ...updates,
+      };
+    }
+
+    updateRelationships(newRelationships);
+  };
+
+  const handleDelegateRadioChange = (value: string) => {
+    if (value && checkForCycle(value)) return;
+
+    const newRelationships: A2AEdgeData['relationships'] = {
+      ...(selectedEdge.data?.relationships as A2AEdgeData['relationships']),
+      delegateSourceToTarget: false,
+      delegateTargetToSource: false,
+    };
+
+    if (value === REMOVE_DELEGATION_OPTION_ID) {
+      newRelationships.delegateSourceToTarget = false;
+      newRelationships.delegateTargetToSource = false;
+    } else if (value) {
+      if (isSelfLoop && value === 'delegateSourceToTarget') {
+        newRelationships.delegateSourceToTarget = true;
+        newRelationships.delegateTargetToSource = true;
+      } else {
+        newRelationships[value as keyof A2AEdgeData['relationships']] = true;
+      }
+    }
+    updateRelationships(newRelationships);
+  };
+
+  const sourceName = getNodeLabel(sourceNode);
+  const targetName = getNodeLabel(targetNode);
+
+  const transferOptions = isSelfLoop
+    ? [
+        {
+          id: 'transferSourceToTarget',
+          label: (
+            <div>
+              <Badge variant="code" className="my-0.5">
+                {sourceName}
+              </Badge>{' '}
+              can transfer to itself
+            </div>
+          ),
+        },
+      ]
+    : [
+        {
+          id: 'transferSourceToTarget',
+          label: (
+            <div>
+              <Badge variant="code" className="my-0.5">
+                {sourceName}
+              </Badge>{' '}
+              can transfer to{' '}
+              <Badge variant="code" className="my-0.5">
+                {targetName}
+              </Badge>
+            </div>
+          ),
+        },
+        {
+          id: 'transferTargetToSource',
+          label: (
+            <div>
+              <Badge variant="code" className="my-0.5">
+                {targetName}
+              </Badge>{' '}
+              can transfer to{' '}
+              <Badge variant="code" className="my-0.5">
+                {sourceName}
+              </Badge>
+            </div>
+          ),
+        },
+      ];
+
+  const delegateOptions = isSelfLoop
+    ? [
+        {
+          id: 'delegateSourceToTarget',
+          label: (
+            <div>
+              <Badge variant="code" className="my-0.5">
+                {sourceName}
+              </Badge>{' '}
+              can delegate to itself
+            </div>
+          ),
+        },
+        {
+          id: REMOVE_DELEGATION_OPTION_ID,
+          label: <div className="my-0.5 leading-[22px]">None</div>,
+        },
+      ]
+    : [
+        {
+          id: 'delegateSourceToTarget',
+          label: (
+            <div>
+              <Badge variant="code" className="my-0.5">
+                {sourceName}
+              </Badge>{' '}
+              can delegate to{' '}
+              <Badge variant="code" className="my-0.5">
+                {targetName}
+              </Badge>
+            </div>
+          ),
+        },
+        {
+          id: 'delegateTargetToSource',
+          label: (
+            <div>
+              <Badge variant="code" className="my-0.5">
+                {targetName}
+              </Badge>{' '}
+              can delegate to{' '}
+              <Badge variant="code" className="my-0.5">
+                {sourceName}
+              </Badge>
+            </div>
+          ),
+        },
+        {
+          id: REMOVE_DELEGATION_OPTION_ID,
+          label: <div className="my-0.5 leading-[22px]">None</div>,
+        },
+      ];
+
+  return (
+    <div className="space-y-8">
+      <RelationshipSection
+        icon={<Spline className="w-4 h-4 text-muted-foreground" />}
+        title="Transfer relationships"
+        description="Transfer relationships completely relinquish control from one agent to another."
+        options={transferOptions}
+        onCheckedChange={handleCheckboxChange}
+        checkedValues={selectedEdge.data?.relationships as A2AEdgeData['relationships']}
+      />
+      <hr />
+      <RelationshipSection
+        icon={<DashedSplineIcon className="w-4 h-4 text-muted-foreground" />}
+        title="Delegate relationships"
+        description="Delegate relationships are used to pass a task from one agent to another. Delegate relationships cannot be bi-directional."
+        options={delegateOptions}
+        onCheckedChange={handleCheckboxChange}
+        checkedValues={selectedEdge.data?.relationships as A2AEdgeData['relationships']}
+        useRadio={true}
+        onRadioChange={handleDelegateRadioChange}
+        defaultRadioValue={REMOVE_DELEGATION_OPTION_ID}
+      />
+      {canEdit && (
+        <>
+          <Separator />
+          <div className="flex justify-end">
+            <Button variant="destructive-outline" size="sm" onClick={deleteEdge}>
+              <Trash2 className="size-4" />
+              Delete
+            </Button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+export default EdgeEditor;

@@ -1,0 +1,96 @@
+import type { InkeepAIChatSettings, InkeepBaseSettings } from '@agent-fabric/agents-ui/types';
+import { CodeIcon, EyeIcon } from 'lucide-react';
+import { useForm } from 'react-hook-form';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { AGENT_FABRIC_BRAND_COLOR, DOCS_BASE_URL } from '@/constants/theme';
+import { useRuntimeConfig } from '@/contexts/runtime-config';
+import { DocsLink, Header } from '../guide-header';
+import { ChatUICode } from './chat-ui-code';
+import { ChatUIPreview } from './chat-ui-preview';
+import { ChatUIComponent, ChatUIPreviewForm } from './chat-ui-preview-form';
+
+interface ChatUIProps {
+  component: ChatUIComponent;
+  baseSettings: InkeepBaseSettings;
+  aiChatSettings: InkeepAIChatSettings;
+  shouldEmitDataOperations: boolean;
+}
+
+export function ChatUIGuide() {
+  // TODO:
+  // React Hook Form's `useForm()` API returns a `watch()` function which cannot be memoized safely.
+  'use no memo';
+  const { PUBLIC_AGENT_FABRIC_AGENTS_API_URL: baseUrl } = useRuntimeConfig();
+  const form = useForm<ChatUIProps>({
+    defaultValues: {
+      component: ChatUIComponent.EMBEDDED_CHAT,
+      baseSettings: {
+        primaryBrandColor: AGENT_FABRIC_BRAND_COLOR,
+        shouldBypassCaptcha: true,
+      },
+      aiChatSettings: {
+        baseUrl,
+        isChatHistoryButtonVisible: false,
+        aiAssistantAvatar: '',
+        introMessage: 'Hi! How can I help?',
+        placeholder: 'How do I get started?',
+      },
+      shouldEmitDataOperations: true,
+    },
+  });
+  const allValues = form.watch();
+  const component = allValues.component ?? ChatUIComponent.EMBEDDED_CHAT;
+  const baseSettings = allValues.baseSettings ?? { primaryBrandColor: AGENT_FABRIC_BRAND_COLOR };
+  const aiChatSettings = allValues.aiChatSettings ?? { baseUrl };
+  const shouldEmitDataOperations = allValues.shouldEmitDataOperations ?? true;
+
+  return (
+    <Tabs defaultValue="preview">
+      <Header.Container>
+        <Header.Title title="Chat UI" />
+        <div className="flex items-center gap-2">
+          <TabsList className="h-8">
+            <TabsTrigger value="preview" className="py-0.5 px-2.5 gap-2">
+              <EyeIcon className="size-4" />
+              <span>Preview</span>
+            </TabsTrigger>
+
+            <TabsTrigger value="code" className="py-0.5 px-2.5 gap-2">
+              <CodeIcon className="size-4" />
+              <span>Code</span>
+            </TabsTrigger>
+          </TabsList>
+          {/* todo should this link change based on the react vs js toggle? */}
+          <DocsLink href={`${DOCS_BASE_URL}/talk-to-your-agents/react/chat-button`} />
+        </div>
+      </Header.Container>
+      <TabsContent value="preview">
+        <div className="flex flex-row gap-12 w-full">
+          <ChatUIPreviewForm form={form} />
+          <div className="flex-3/5 w-full h-[500px]">
+            <ChatUIPreview
+              component={component}
+              baseSettings={baseSettings}
+              aiChatSettings={aiChatSettings}
+              shouldEmitDataOperations={shouldEmitDataOperations}
+              // force re-render when shouldEmitDataOperations changes otherwise the headers will not be updated
+              key={shouldEmitDataOperations ? 'true' : 'false'}
+            />
+          </div>
+        </div>
+      </TabsContent>
+      <TabsContent value="code">
+        <ChatUICode
+          component={component}
+          baseSettings={baseSettings}
+          extraAiChatSettings={{
+            introMessage: aiChatSettings.introMessage,
+            placeholder: aiChatSettings.placeholder,
+            aiAssistantAvatar: aiChatSettings.aiAssistantAvatar,
+          }}
+          baseUrl={baseUrl}
+        />
+      </TabsContent>
+    </Tabs>
+  );
+}

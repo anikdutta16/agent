@@ -1,0 +1,440 @@
+import { anthropic, createAnthropic } from '@ai-sdk/anthropic';
+import { createAzure } from '@ai-sdk/azure';
+import { createGateway, gateway } from '@ai-sdk/gateway';
+import { createGoogleGenerativeAI, google } from '@ai-sdk/google';
+import { createOpenAI, openai } from '@ai-sdk/openai';
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+import type { JSONObject } from '@ai-sdk/provider';
+import { createOpenRouter, openrouter } from '@openrouter/ai-sdk-provider';
+import type { LanguageModel } from 'ai';
+import { wrapLanguageModel } from 'ai';
+
+import type { ModelSettings } from '../validation/schemas.js';
+import { getLogger } from './logger';
+import { createMockModel } from './mock-provider.js';
+import { gatewayCostMiddleware } from './usage-cost-middleware';
+
+const logger = getLogger('ModelFactory');
+
+import { GATEWAY_ROUTABLE_PROVIDERS_SET } from '../constants/models.js';
+
+// NVIDIA NIM default provider instance
+const nimDefault = createOpenAICompatible({
+  name: 'nim',
+  baseURL: 'https://integrate.api.nvidia.com/v1',
+  headers: {
+    Authorization: `Bearer ${process.env.NIM_API_KEY}`,
+  },
+});
+
+/**
+ * Factory for creating AI SDK language models from configuration
+ * Supports multiple providers and AI Gateway integration
+ */
+export class ModelFactory {
+  /**
+   * Create a provider instance with custom configuration
+   * Returns a provider with at least languageModel method
+   */
+  private static createProvider(
+    provider: string,
+    config: Record<string, unknown>
+  ): { languageModel: (modelId: string) => LanguageModel } {
+    switch (provider) {
+      case 'anthropic':
+        return createAnthropic(config);
+      case 'azure': {
+        if (!config.resourceName && !config.baseURL) {
+          const hasApiKey = !!process.env.AZURE_OPENAI_API_KEY;
+          const errorMessage = hasApiKey
+            ? 'Azure provider requires either resourceName or baseURL in provider options. ' +
+              'Provide resourceName for standard Azure OpenAI, or baseURL for custom endpoints.'
+            : 'Azure provider requires either resourceName or baseURL in provider options, ' +
+              'and AZURE_OPENAI_API_KEY environment variable must be set. ' +
+              'Provide resourceName for standard Azure OpenAI, or baseURL for custom endpoints.';
+
+          throw new Error(errorMessage);
+        }
+        return createAzure(config) as unknown as {
+          languageModel: (modelId: string) => LanguageModel;
+        };
+      }
+      case 'openai':
+        return createOpenAI(config);
+      case 'google':
+        return createGoogleGenerativeAI(config);
+      case 'openrouter':
+        return createOpenRouter(config);
+      case 'gateway':
+        return createGateway(config);
+      case 'nim': {
+        const nimConfig = {
+          name: 'nim',
+          baseURL: 'https://integrate.api.nvidia.com/v1',
+          headers: {
+            Authorization: `Bearer ${process.env.NIM_API_KEY}`,
+          },
+          ...config,
+        };
+        return createOpenAICompatible(nimConfig);
+      }
+      case 'custom': {
+        if (!config.baseURL && !config.baseUrl) {
+          throw new Error(
+            'Custom provider requires baseURL. Please provide it in providerOptions.baseURL or providerOptions.baseUrl'
+          );
+        }
+        const customConfig = {
+          name: 'custom',
+          baseURL: (config.baseURL || config.baseUrl) as string,
+          headers: {
+            ...(process.env.CUSTOM_LLM_API_KEY && {
+              Authorization: `Bearer ${process.env.CUSTOM_LLM_API_KEY}`,
+            }),
+            ...((config as any).headers || {}),
+          },
+          ...config,
+        };
+        logger.info(
+          {
+            config: {
+              baseURL: customConfig.baseURL,
+              hasApiKey: !!process.env.CUSTOM_LLM_API_KEY,
+              apiKeyPrefix: `${process.env.CUSTOM_LLM_API_KEY?.substring(0, 10)}...`,
+              headers: Object.keys(customConfig.headers || {}),
+            },
+          },
+          'Creating custom OpenAI-compatible provider'
+        );
+        return createOpenAICompatible(customConfig);
+      }
+      default:
+        throw new Error(`Unsupported provider: ${provider}`);
+    }
+  }
+
+  /**
+   * Extract provider configuration from providerOptions
+   * Only includes settings that go to the provider constructor (baseURL, headers, etc.)
+   */
+  private static extractProviderConfig(
+    providerOptions?: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (!providerOptions) {
+      return {};
+    }
+
+    const providerConfig: Record<string, unknown> = {};
+
+    if (providerOptions.baseUrl || providerOptions.baseURL) {
+      providerConfig.baseURL = providerOptions.baseUrl || providerOptions.baseURL;
+    }
+
+    if (providerOptions.headers) {
+      providerConfig.headers = providerOptions.headers;
+    }
+
+    if (providerOptions.resourceName) {
+      providerConfig.resourceName = providerOptions.resourceName;
+    }
+
+    if (providerOptions.apiVersion) {
+      providerConfig.apiVersion = providerOptions.apiVersion;
+    }
+
+    return providerConfig;
+  }
+
+  /**
+   * Extract per-call provider options to pass as providerOptions in streamText/generateText.
+   * Any object-valued key (except constructor config keys like headers) is treated as
+   * a provider-specific per-call option, e.g. anthropic.thinking, gateway.models.
+   */
+  static extractStreamProviderOptions(
+    providerOptions?: Record<string, unknown>
+  ): Record<string, JSONObject> | undefined {
+    if (!providerOptions) {
+      return undefined;
+    }
+
+    const constructorObjectKeys = new Set(['headers']);
+    const result: Record<string, JSONObject> = {};
+
+    for (const [key, value] of Object.entries(providerOptions)) {
+      if (
+        value !== null &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        !constructorObjectKeys.has(key)
+      ) {
+        result[key] = value as JSONObject;
+      }
+    }
+
+    return Object.keys(result).length > 0 ? result : undefined;
+  }
+
+  /**
+   * Whether the given model settings will route through the Vercel AI Gateway
+   * vs. instantiating a direct provider client. Mirrors the gate used inside
+   * createModel so callers (e.g. the prompt-caching actuator) can detect mode
+   * without recreating the model instance.
+   */
+  static shouldRouteViaGateway(modelSettings: ModelSettings): boolean {
+    const modelString = modelSettings.model?.trim();
+    if (!modelString) {
+      return false;
+    }
+    const { provider } = ModelFactory.parseModelString(modelString);
+    const providerConfig = ModelFactory.extractProviderConfig(modelSettings.providerOptions);
+    return (
+      !!process.env.AI_GATEWAY_API_KEY &&
+      GATEWAY_ROUTABLE_PROVIDERS_SET.has(provider) &&
+      Object.keys(providerConfig).length === 0
+    );
+  }
+
+  /**
+   * Create a language model instance from configuration
+   * Throws error if no config provided - models must be configured at project level
+   */
+  static createModel(config: ModelSettings): LanguageModel {
+    if (!config?.model?.trim()) {
+      throw new Error(
+        'Model configuration is required. Please configure models at the project level.'
+      );
+    }
+
+    const modelSettings = config;
+    if (!modelSettings.model) {
+      throw new Error('Model configuration is required');
+    }
+    const modelString = modelSettings.model.trim();
+    const { provider, modelName } = ModelFactory.parseModelString(modelString);
+
+    logger.debug(
+      {
+        provider,
+        model: modelName,
+        fullModelString: modelSettings.model,
+        hasProviderOptions: !!modelSettings.providerOptions,
+      },
+      'Creating language model from config'
+    );
+
+    const providerConfig = ModelFactory.extractProviderConfig(modelSettings.providerOptions);
+
+    const routeViaGateway = ModelFactory.shouldRouteViaGateway({
+      model: modelSettings.model,
+      providerOptions: modelSettings.providerOptions,
+    });
+
+    let model: LanguageModel;
+
+    if (routeViaGateway) {
+      const hasAllowedProviders = !!modelSettings.allowedProviders?.length;
+      model = gateway(hasAllowedProviders ? modelName : `${provider}/${modelName}`);
+    } else if (
+      provider !== 'mock' &&
+      (provider === 'azure' || Object.keys(providerConfig).length > 0)
+    ) {
+      logger.info({ config: providerConfig }, `Applying custom ${provider} provider configuration`);
+      const customProvider = ModelFactory.createProvider(provider, providerConfig);
+      model = customProvider.languageModel(modelName);
+    } else {
+      switch (provider) {
+        case 'anthropic':
+          model = anthropic(modelName);
+          break;
+        case 'openai':
+          model = openai(modelName);
+          break;
+        case 'google':
+          model = google(modelName);
+          break;
+        case 'openrouter':
+          model = openrouter(modelName);
+          break;
+        case 'gateway':
+          model = gateway(modelName);
+          break;
+        case 'nim':
+          model = nimDefault(modelName);
+          break;
+        case 'mock':
+          return createMockModel(modelName) as unknown as LanguageModel;
+        case 'custom':
+          throw new Error(
+            'Custom provider requires configuration. Please provide baseURL in providerOptions.baseURL'
+          );
+        default:
+          throw new Error(
+            `Unsupported provider: ${provider}. ` +
+              `Supported providers are: ${ModelFactory.BUILT_IN_PROVIDERS.join(', ')}. ` +
+              `To access other models, use OpenRouter (openrouter/model-id), Vercel AI Gateway (gateway/model-id), NVIDIA NIM (nim/model-id), or Custom OpenAI-compatible (custom/model-id).`
+          );
+      }
+    }
+
+    return wrapLanguageModel({
+      model: model as Parameters<typeof wrapLanguageModel>[0]['model'],
+      middleware: gatewayCostMiddleware,
+    });
+  }
+
+  /**
+   * Built-in providers that have special handling
+   */
+  private static readonly BUILT_IN_PROVIDERS = [
+    'anthropic',
+    'azure',
+    'openai',
+    'google',
+    'openrouter',
+    'gateway',
+    'nim',
+    'custom',
+    'mock',
+  ] as const;
+
+  /**
+   * Parse model string to extract provider and model name
+   * Examples: "anthropic/claude-sonnet-4" -> { provider: "anthropic", modelName: "claude-sonnet-4" }
+   *          "openrouter/anthropic/claude-sonnet-4" -> { provider: "openrouter", modelName: "anthropic/claude-sonnet-4" }
+   *          "claude-sonnet-4" -> { provider: "anthropic", modelName: "claude-sonnet-4" } (default to anthropic)
+   */
+  static parseModelString(modelString: string): { provider: string; modelName: string } {
+    if (modelString.includes('/')) {
+      const [provider, ...modelParts] = modelString.split('/');
+      const normalizedProvider = provider.toLowerCase();
+
+      if (!ModelFactory.BUILT_IN_PROVIDERS.includes(normalizedProvider as any)) {
+        throw new Error(
+          `Unsupported provider: ${normalizedProvider}. ` +
+            `Supported providers are: ${ModelFactory.BUILT_IN_PROVIDERS.join(', ')}. ` +
+            `To access other models, use OpenRouter (openrouter/model-id), Vercel AI Gateway (gateway/model-id), NVIDIA NIM (nim/model-id), or Custom OpenAI-compatible (custom/model-id).`
+        );
+      }
+
+      return {
+        provider: normalizedProvider,
+        modelName: modelParts.join('/'),
+      };
+    }
+
+    throw new Error(`No provider specified in model string: ${modelString}`);
+  }
+
+  /**
+   * Get generation parameters from provider options
+   * These are parameters that get passed to generateText/streamText calls
+   */
+  static getGenerationParams(providerOptions?: Record<string, unknown>): Record<string, unknown> {
+    if (!providerOptions) {
+      return {};
+    }
+
+    const excludedKeys = new Set([
+      'apiKey',
+      'baseURL',
+      'baseUrl',
+      'resourceName',
+      'apiVersion',
+      'maxDuration',
+      'headers',
+    ]);
+
+    const params: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(providerOptions)) {
+      if (!excludedKeys.has(key) && value !== undefined && typeof value !== 'object') {
+        params[key] = value;
+      }
+    }
+
+    return params;
+  }
+
+  /**
+   * Prepare complete generation configuration from model settings
+   * Returns model instance and generation parameters ready to spread into generateText/streamText
+   * Includes maxDuration if specified in provider options (in seconds, following Vercel standard)
+   */
+  static prepareGenerationConfig(modelSettings?: ModelSettings): {
+    model: LanguageModel;
+    maxDuration?: number;
+    providerOptions?: Record<string, JSONObject>;
+  } {
+    const modelString = modelSettings?.model?.trim();
+
+    const model = ModelFactory.createModel({
+      model: modelString,
+      providerOptions: modelSettings?.providerOptions,
+      allowedProviders: modelSettings?.allowedProviders,
+    });
+
+    const generationParams = ModelFactory.getGenerationParams(modelSettings?.providerOptions);
+    let streamProviderOptions = ModelFactory.extractStreamProviderOptions(
+      modelSettings?.providerOptions
+    );
+    const maxDuration = modelSettings?.providerOptions?.maxDuration as number | undefined;
+
+    if (process.env.AI_GATEWAY_API_KEY) {
+      const hasAllowedProviders = !!modelSettings?.allowedProviders?.length;
+      const hasFallbackModels = !!modelSettings?.fallbackModels?.length;
+
+      if (hasAllowedProviders || hasFallbackModels) {
+        const existingGateway = (streamProviderOptions?.gateway ?? {}) as Record<string, unknown>;
+        streamProviderOptions = {
+          ...streamProviderOptions,
+          gateway: {
+            ...existingGateway,
+            ...(hasFallbackModels && { models: modelSettings.fallbackModels }),
+            ...(hasAllowedProviders && {
+              order: modelSettings.allowedProviders,
+              only: modelSettings.allowedProviders,
+            }),
+          } as JSONObject,
+        };
+      }
+    }
+
+    return {
+      model,
+      ...generationParams,
+      ...(maxDuration !== undefined && { maxDuration }),
+      ...(streamProviderOptions !== undefined && {
+        providerOptions: streamProviderOptions as Record<string, JSONObject>,
+      }),
+    };
+  }
+
+  /**
+   * Validate model settingsuration
+   * Basic validation only - let AI SDK handle parameter-specific validation
+   */
+  static validateConfig(config: ModelSettings): string[] {
+    const errors: string[] = [];
+
+    if (!config.model) {
+      errors.push('Model name is required');
+    }
+
+    if (config.providerOptions) {
+      if (config.providerOptions.apiKey) {
+        errors.push(
+          'API keys should not be stored in provider options. ' +
+            'Use environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY) or credential store instead.'
+        );
+      }
+
+      if (config.providerOptions.maxDuration !== undefined) {
+        const maxDuration = config.providerOptions.maxDuration;
+        if (typeof maxDuration !== 'number' || maxDuration <= 0) {
+          errors.push('maxDuration must be a positive number (in seconds)');
+        }
+      }
+    }
+
+    return errors;
+  }
+}

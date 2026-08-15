@@ -1,0 +1,529 @@
+'use client';
+
+import {
+  ArrowUpRight,
+  ChevronLeft,
+  ChevronRight,
+  FileUp,
+  Loader2,
+  MessageSquare,
+  Sparkles,
+  ThumbsDown,
+  ThumbsUp,
+  Trash2,
+} from 'lucide-react';
+import Link from 'next/link';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import React from 'react';
+import { toast } from 'sonner';
+import { DeleteFeedbackConfirmation } from '@/components/feedback/delete-feedback-confirmation';
+import { FeedbackCsvUploadDialog } from '@/components/feedback/feedback-csv-upload-dialog';
+import EmptyState from '@/components/layout/empty-state';
+import { AgentFilter } from '@/components/traces/filters/agent-filter';
+import { DatePickerWithPresets } from '@/components/traces/filters/date-picker';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Textarea } from '@/components/ui/textarea';
+import { triggerImprovementAction } from '@/lib/actions/improvements';
+import type { Feedback } from '@/lib/api/feedback';
+import {
+  ALL_TIME,
+  CUSTOM_RANGE,
+  TIME_RANGE_OPTIONS,
+  type TimeRangeValue,
+} from '@/lib/filters/time-range-filter';
+import { useProjectPermissionsQuery } from '@/lib/query/projects';
+import { formatDateTimeTable } from '@/lib/utils/format-date';
+
+function truncate(value: string, max = 120): string {
+  if (value.length <= max) return value;
+  return `${value.slice(0, Math.max(0, max - 1))}…`;
+}
+
+interface FeedbackTableProps {
+  tenantId: string;
+  projectId: string;
+  feedback: Feedback[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    pages: number;
+  };
+  filters: {
+    conversationId?: string;
+    agentId?: string;
+    type?: 'positive' | 'negative';
+    startDate?: string;
+    endDate?: string;
+    range?: TimeRangeValue;
+  };
+}
+
+export function FeedbackTable({
+  tenantId,
+  projectId,
+  feedback,
+  pagination,
+  filters,
+}: FeedbackTableProps) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const [typeFilter, setTypeFilter] = React.useState<'positive' | 'negative' | undefined>(
+    filters.type
+  );
+  const [deleteFeedbackId, setDeleteFeedbackId] = React.useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set());
+  const [isTriggering, setIsTriggering] = React.useState(false);
+  const [showContextDialog, setShowContextDialog] = React.useState(false);
+  const [additionalContext, setAdditionalContext] = React.useState('');
+  const {
+    data: { canEdit },
+  } = useProjectPermissionsQuery();
+
+  const toggleFeedback = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    if (selectedIds.size === feedback.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(feedback.map((f) => f.id)));
+    }
+  };
+
+  const handleTriggerImprovement = () => {
+    if (selectedIds.size === 0) return;
+    setAdditionalContext('');
+    setShowContextDialog(true);
+  };
+
+  const confirmTrigger = async () => {
+    setShowContextDialog(false);
+    setIsTriggering(true);
+
+    const context = additionalContext.trim() || undefined;
+    const triggerResult = await triggerImprovementAction(
+      tenantId,
+      projectId,
+      Array.from(selectedIds),
+      context
+    ).catch((error) => {
+      toast.error(error instanceof Error ? error.message : 'Failed to trigger improvement');
+      return null;
+    });
+
+    if (!triggerResult?.success || !triggerResult.data) {
+      if (triggerResult) toast.error(triggerResult.error || 'Failed to trigger improvement');
+      setIsTriggering(false);
+      return;
+    }
+
+    const { branchName } = triggerResult.data;
+
+    setIsTriggering(false);
+    const branchEncoded = encodeURIComponent(branchName);
+    router.push(`/${tenantId}/projects/${projectId}/improvements/${branchEncoded}`);
+  };
+
+  React.useEffect(() => {
+    setTypeFilter(filters.type);
+  }, [filters.type]);
+
+  const updateQuery = React.useCallback(
+    (next: {
+      type?: 'positive' | 'negative' | '';
+      agentId?: string;
+      startDate?: string;
+      endDate?: string;
+      range?: TimeRangeValue;
+      page?: number;
+    }) => {
+      const params = new URLSearchParams(searchParams.toString());
+
+      if (next.type === undefined) {
+        // no-op
+      } else if (next.type) {
+        params.set('type', next.type);
+      } else {
+        params.delete('type');
+      }
+
+      if (next.agentId !== undefined) {
+        if (next.agentId) {
+          params.set('agentId', next.agentId);
+        } else {
+          params.delete('agentId');
+        }
+      }
+
+      if (next.range !== undefined) {
+        if (next.range) {
+          params.set('range', next.range);
+        } else {
+          params.delete('range');
+        }
+      }
+
+      if (next.startDate !== undefined) {
+        if (next.startDate) {
+          params.set('startDate', next.startDate);
+        } else {
+          params.delete('startDate');
+        }
+      }
+
+      if (next.endDate !== undefined) {
+        if (next.endDate) {
+          params.set('endDate', next.endDate);
+        } else {
+          params.delete('endDate');
+        }
+      }
+
+      if (next.page === undefined) {
+        // no-op
+      } else if (next.page <= 1) {
+        params.delete('page');
+      } else {
+        params.set('page', String(next.page));
+      }
+
+      router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+    },
+    [pathname, router, searchParams]
+  );
+
+  const hasActiveFilters = !!(
+    filters.type ||
+    filters.agentId ||
+    (filters.range && filters.range !== ALL_TIME)
+  );
+
+  const clearFilters = () => {
+    setTypeFilter(undefined);
+    updateQuery({ type: '', agentId: '', range: ALL_TIME, startDate: '', endDate: '', page: 1 });
+  };
+
+  if (!feedback.length && !hasActiveFilters) {
+    return (
+      <EmptyState
+        title="No feedback yet."
+        description="When users leave feedback, it will show up here. You can also import feedback from a CSV file."
+        icon={<MessageSquare className="h-10 w-10 text-muted-foreground" />}
+        action={
+          canEdit ? (
+            <FeedbackCsvUploadDialog
+              tenantId={tenantId}
+              projectId={projectId}
+              trigger={
+                <Button variant="outline" size="sm">
+                  <FileUp className="h-3.5 w-3.5" />
+                  Import CSV
+                </Button>
+              }
+            />
+          ) : undefined
+        }
+      />
+    );
+  }
+
+  const positiveCount = typeFilter === 'positive' ? pagination.total : undefined;
+  const negativeCount = typeFilter === 'negative' ? pagination.total : undefined;
+
+  const dateRangeValue =
+    filters.range === CUSTOM_RANGE
+      ? { from: filters.startDate ?? '', to: filters.endDate ?? '' }
+      : (filters.range ?? ALL_TIME);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <Tabs
+          value={typeFilter ?? 'all'}
+          onValueChange={(value) => {
+            const next = value === 'all' ? undefined : (value as 'positive' | 'negative');
+            setTypeFilter(next);
+            updateQuery({ type: next ?? '', page: 1 });
+          }}
+        >
+          <TabsList>
+            <TabsTrigger value="all" className="gap-1.5 font-sans normal-case">
+              All
+              {!typeFilter && <span className="text-xs opacity-70">{pagination.total}</span>}
+            </TabsTrigger>
+            <TabsTrigger value="positive" className="gap-1.5 font-sans normal-case">
+              <ThumbsUp className="h-3.5 w-3.5" />
+              Positive
+              {positiveCount !== undefined && (
+                <span className="text-xs opacity-70">{positiveCount}</span>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="negative" className="gap-1.5 font-sans normal-case">
+              <ThumbsDown className="h-3.5 w-3.5" />
+              Negative
+              {negativeCount !== undefined && (
+                <span className="text-xs opacity-70">{negativeCount}</span>
+              )}
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+
+        <div className="flex items-center gap-2">
+          <AgentFilter
+            selectedValue={filters.agentId}
+            onSelect={(value) => {
+              updateQuery({ agentId: value ?? '', page: 1 });
+            }}
+          />
+          <div className="w-full sm:w-auto">
+            <DatePickerWithPresets<TimeRangeValue>
+              label="Date range"
+              value={dateRangeValue}
+              options={TIME_RANGE_OPTIONS}
+              onAdd={(value) => {
+                updateQuery({ range: value, startDate: '', endDate: '', page: 1 });
+              }}
+              onRemove={() => {
+                updateQuery({ range: ALL_TIME, startDate: '', endDate: '', page: 1 });
+              }}
+              setCustomDateRange={(start, end) => {
+                if (!start && !end) return;
+                updateQuery({ range: CUSTOM_RANGE, startDate: start, endDate: end, page: 1 });
+              }}
+            />
+          </div>
+
+          {canEdit && (
+            <FeedbackCsvUploadDialog
+              tenantId={tenantId}
+              projectId={projectId}
+              trigger={
+                <Button variant="ghost" size="sm" className="h-8">
+                  <FileUp className="h-3.5 w-3.5" />
+                  Import CSV
+                </Button>
+              }
+            />
+          )}
+
+          {hasActiveFilters && (
+            <Button variant="ghost" size="sm" onClick={clearFilters} className="text-xs">
+              Clear
+            </Button>
+          )}
+
+          {selectedIds.size > 0 && canEdit && (
+            <Button size="sm" onClick={handleTriggerImprovement} disabled={isTriggering}>
+              {isTriggering ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
+              ) : (
+                <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+              )}
+              Run Improvement ({selectedIds.size})
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <Table containerClassName="rounded-lg border">
+        <TableHeader>
+          <TableRow noHover>
+            <TableHead className="w-10">
+              <Checkbox
+                checked={feedback.length > 0 && selectedIds.size === feedback.length}
+                onCheckedChange={toggleAll}
+                aria-label="Select all"
+              />
+            </TableHead>
+            <TableHead className="w-[170px]">Created</TableHead>
+            <TableHead className="w-[90px]">Type</TableHead>
+            <TableHead>Feedback</TableHead>
+            <TableHead className="w-[130px]">Agent</TableHead>
+            <TableHead className="w-[140px] text-right">View conversation</TableHead>
+            <TableHead className="w-[140px] text-right">Delete</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {feedback.length === 0 && (
+            <TableRow noHover>
+              <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
+                No feedback found matching your filters.
+              </TableCell>
+            </TableRow>
+          )}
+          {feedback.map((item) => {
+            const conversationHref = item.messageId
+              ? `/${tenantId}/projects/${projectId}/traces/conversations/${item.conversationId}?messageId=${item.messageId}`
+              : `/${tenantId}/projects/${projectId}/traces/conversations/${item.conversationId}`;
+            return (
+              <TableRow key={item.id}>
+                <TableCell>
+                  <Checkbox
+                    checked={selectedIds.has(item.id)}
+                    onCheckedChange={() => toggleFeedback(item.id)}
+                    aria-label={`Select feedback ${item.id}`}
+                  />
+                </TableCell>
+                <TableCell className="font-mono text-xs text-muted-foreground whitespace-nowrap">
+                  {formatDateTimeTable(item.createdAt, { local: true })}
+                </TableCell>
+                <TableCell className="whitespace-nowrap">
+                  <Badge
+                    className="uppercase"
+                    variant={item.type === 'positive' ? 'primary' : 'error'}
+                  >
+                    {item.type}
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-sm text-foreground whitespace-normal">
+                  {item.details ? (
+                    truncate(String(item.details), 240)
+                  ) : (
+                    <span className="text-muted-foreground/50">—</span>
+                  )}
+                </TableCell>
+                <TableCell className="max-w-[130px]" title={item.agentId ?? undefined}>
+                  {item.agentId ? (
+                    <Badge variant="code" className="text-xs truncate max-w-full inline-block">
+                      {item.agentId}
+                    </Badge>
+                  ) : (
+                    <span className="text-muted-foreground/50">—</span>
+                  )}
+                </TableCell>
+                <TableCell className="whitespace-nowrap text-right">
+                  <Link
+                    href={conversationHref}
+                    className="inline-flex items-center justify-center h-8 w-8 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                    aria-label={item.messageId ? 'View message' : 'View conversation'}
+                  >
+                    <ArrowUpRight className="h-4 w-4" />
+                  </Link>
+                </TableCell>
+                <TableCell className="whitespace-nowrap text-right">
+                  {canEdit && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                      aria-label="Delete feedback"
+                      onClick={() => setDeleteFeedbackId(item.id)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  )}
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+
+      {deleteFeedbackId ? (
+        <DeleteFeedbackConfirmation
+          tenantId={tenantId}
+          projectId={projectId}
+          feedbackId={deleteFeedbackId}
+          isOpen={true}
+          onOpenChange={(open) => {
+            if (!open) setDeleteFeedbackId(null);
+          }}
+          onDeleted={() => router.refresh()}
+        />
+      ) : null}
+
+      <Dialog open={showContextDialog} onOpenChange={setShowContextDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Run Improvement</DialogTitle>
+            <DialogDescription>
+              The improvement agent will analyze {selectedIds.size} selected feedback
+              {selectedIds.size > 1 ? ' items' : ''} and propose changes.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="additional-context">Additional context (optional)</Label>
+            <Textarea
+              id="additional-context"
+              placeholder="e.g. Focus on improving the system prompt for handling edge cases..."
+              value={additionalContext}
+              onChange={(e) => setAdditionalContext(e.target.value)}
+              rows={4}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowContextDialog(false)}>
+              Cancel
+            </Button>
+            <Button onClick={confirmTrigger}>
+              <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+              Run Improvement
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-muted-foreground">
+          Page {pagination.page} of {pagination.pages || 1}
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={pagination.page <= 1}
+            onClick={() => updateQuery({ page: Math.max(1, pagination.page - 1) })}
+          >
+            <ChevronLeft className="h-4 w-4" />
+            Prev
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={
+              pagination.pages
+                ? pagination.page >= pagination.pages
+                : feedback.length < pagination.limit
+            }
+            onClick={() => updateQuery({ page: pagination.page + 1 })}
+          >
+            Next
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}

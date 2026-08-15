@@ -1,0 +1,290 @@
+import {
+  AgentWithinContextOfProjectResponse,
+  AgentWithinContextOfProjectSchema,
+  commonGetErrorResponses,
+  createApiError,
+  createFullAgentServerSide,
+  deleteFullAgent,
+  ErrorResponseSchema,
+  type FullAgentDefinition,
+  getFullAgent,
+  TenantProjectAgentParamsSchema,
+  TenantProjectParamsSchema,
+  updateFullAgentServerSide,
+} from '@agent-fabric/agents-core';
+import { createProtectedRoute } from '@agent-fabric/agents-core/middleware';
+import { clearWorkspaceConnectionCache } from '@agent-fabric/agents-work-apps/slack';
+import { OpenAPIHono } from '@hono/zod-openapi';
+import { HTTPException } from 'hono/http-exception';
+import { requireProjectPermission } from '../../../middleware/projectAccess';
+import type { ManageAppVariables } from '../../../types/app';
+import {
+  type ManageRouteHandler,
+  openapiRegisterPutPatchRoutesForLegacy,
+} from '../../../utils/openapiDualRoute';
+
+const app = new OpenAPIHono<{ Variables: ManageAppVariables }>();
+
+app.openapi(
+  createProtectedRoute({
+    method: 'post',
+    path: '/',
+    permission: requireProjectPermission('edit'),
+    summary: 'Create Full Agent',
+    operationId: 'create-full-agent',
+    tags: ['Agents'],
+    description:
+      'Create a complete agent with all agents, tools, and relationships from JSON definition',
+    request: {
+      params: TenantProjectParamsSchema,
+      body: {
+        content: {
+          'application/json': {
+            schema: AgentWithinContextOfProjectSchema,
+          },
+        },
+      },
+    },
+    responses: {
+      201: {
+        description: 'Full agent created successfully',
+        content: {
+          'application/json': {
+            schema: AgentWithinContextOfProjectResponse,
+          },
+        },
+      },
+      409: {
+        description: 'Agent already exists',
+        content: {
+          'application/json': {
+            schema: ErrorResponseSchema,
+          },
+        },
+      },
+      ...commonGetErrorResponses,
+    },
+  }),
+  async (c) => {
+    const db = c.get('db');
+    const { tenantId, projectId } = c.req.valid('param');
+    const agentData = c.req.valid('json');
+
+    const validatedAgentData = AgentWithinContextOfProjectSchema.parse(agentData);
+
+    const createdAgent = await createFullAgentServerSide(db)(
+      { tenantId, projectId },
+      validatedAgentData
+    );
+
+    return c.json({ data: createdAgent }, 201);
+  }
+);
+
+app.openapi(
+  createProtectedRoute({
+    method: 'get',
+    path: '/{agentId}',
+    permission: requireProjectPermission('view'),
+    summary: 'Get Full Agent',
+    operationId: 'get-full-agent',
+    tags: ['Agents'],
+    description: 'Retrieve a complete agent definition with all agents, tools, and relationships',
+    request: {
+      params: TenantProjectAgentParamsSchema,
+    },
+    responses: {
+      200: {
+        description: 'Full agent found',
+        content: {
+          'application/json': {
+            schema: AgentWithinContextOfProjectResponse,
+          },
+        },
+      },
+      ...commonGetErrorResponses,
+    },
+  }),
+  async (c) => {
+    const db = c.get('db');
+    const { tenantId, projectId, agentId } = c.req.valid('param');
+
+    try {
+      const agent: FullAgentDefinition | null = await getFullAgent(db)({
+        scopes: { tenantId, projectId, agentId },
+      });
+
+      if (!agent) {
+        throw createApiError({
+          code: 'not_found',
+          message: 'Agent not found',
+        });
+      }
+
+      return c.json({ data: agent });
+    } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
+      if (error instanceof Error && error.message.includes('not found')) {
+        throw createApiError({
+          code: 'not_found',
+          message: 'Agent not found',
+        });
+      }
+
+      throw createApiError({
+        code: 'internal_server_error',
+        message: 'Failed to retrieve agent',
+      });
+    }
+  }
+);
+
+const updateFullAgentRouteConfig = {
+  path: '/{agentId}' as const,
+  permission: requireProjectPermission('edit'),
+  summary: 'Update Full Agent',
+  tags: ['Agents'],
+  description:
+    'Update or create a complete agent with all agents, tools, and relationships from JSON definition',
+  request: {
+    params: TenantProjectAgentParamsSchema,
+    body: {
+      content: {
+        'application/json': {
+          schema: AgentWithinContextOfProjectSchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Full agent updated successfully',
+      content: {
+        'application/json': {
+          schema: AgentWithinContextOfProjectResponse,
+        },
+      },
+    },
+    201: {
+      description: 'Full agent created successfully',
+      content: {
+        'application/json': {
+          schema: AgentWithinContextOfProjectResponse,
+        },
+      },
+    },
+    ...commonGetErrorResponses,
+  },
+};
+
+const updateFullAgentHandler: ManageRouteHandler<typeof updateFullAgentRouteConfig> = async (c) => {
+  const db = c.get('db');
+  const { tenantId, projectId, agentId } = c.req.valid('param');
+  const agentData = c.req.valid('json');
+
+  try {
+    const validatedAgentData = AgentWithinContextOfProjectSchema.parse(agentData);
+
+    if (agentId !== validatedAgentData.id) {
+      throw createApiError({
+        code: 'bad_request',
+        message: `Agent ID mismatch: expected ${agentId}, got ${validatedAgentData.id}`,
+      });
+    }
+
+    const existingAgent: FullAgentDefinition | null = await getFullAgent(db)({
+      scopes: { tenantId, projectId, agentId },
+    });
+    const isCreate = !existingAgent;
+
+    // Update/create the full agent using server-side data layer operations
+    const updatedAgent: FullAgentDefinition = isCreate
+      ? await createFullAgentServerSide(db)({ tenantId, projectId }, validatedAgentData)
+      : await updateFullAgentServerSide(db)({ tenantId, projectId }, validatedAgentData);
+
+    return c.json({ data: updatedAgent }, isCreate ? 201 : 200);
+  } catch (error) {
+    if (error instanceof HTTPException) {
+      throw error;
+    }
+
+    if (error instanceof Error && error.message.includes('ID mismatch')) {
+      throw createApiError({
+        code: 'bad_request',
+        message: error.message,
+      });
+    }
+
+    throw createApiError({
+      code: 'internal_server_error',
+      message: 'Failed to update agent',
+    });
+  }
+};
+
+openapiRegisterPutPatchRoutesForLegacy(app, updateFullAgentRouteConfig, updateFullAgentHandler, {
+  operationId: 'update-full-agent',
+  canonical: 'put',
+});
+
+app.openapi(
+  createProtectedRoute({
+    method: 'delete',
+    path: '/{agentId}',
+    permission: requireProjectPermission('edit'),
+    summary: 'Delete Full Agent',
+    operationId: 'delete-full-agent',
+    tags: ['Agents'],
+    description:
+      'Delete a complete agent and cascade to all related entities (relationships, not other agents/tools)',
+    request: {
+      params: TenantProjectAgentParamsSchema,
+    },
+    responses: {
+      204: {
+        description: 'Agent deleted successfully',
+      },
+      ...commonGetErrorResponses,
+    },
+  }),
+  async (c) => {
+    const db = c.get('db');
+    const { tenantId, projectId, agentId } = c.req.valid('param');
+
+    try {
+      const deleted = await deleteFullAgent(db)({
+        scopes: { tenantId, projectId, agentId },
+      });
+
+      if (!deleted) {
+        throw createApiError({
+          code: 'not_found',
+          message: 'Agent not found',
+        });
+      }
+
+      clearWorkspaceConnectionCache();
+
+      return c.body(null, 204);
+    } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
+      if (error instanceof Error && error.message.includes('not found')) {
+        throw createApiError({
+          code: 'not_found',
+          message: 'Agent not found',
+        });
+      }
+
+      throw createApiError({
+        code: 'internal_server_error',
+        message: 'Failed to delete agent',
+      });
+    }
+  }
+);
+
+export default app;

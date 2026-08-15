@@ -1,0 +1,179 @@
+'use client';
+
+import { FileUp, Plus } from 'lucide-react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { useEffect, useState } from 'react';
+import { CsvUploadDialog } from '@/components/dataset-items/csv-upload-dialog';
+import { DatasetItemFormDialog } from '@/components/dataset-items/dataset-item-form-dialog';
+import { DatasetItemsTable } from '@/components/dataset-items/dataset-items-table';
+import { Button } from '@/components/ui/button';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import type { DatasetItem } from '@/lib/api/dataset-items';
+import { useProjectPermissionsQuery } from '@/lib/query/projects';
+import { DatasetRunConfigFormDialog } from './dataset-run-config-form-dialog';
+import { DatasetRunsList } from './dataset-runs-list';
+import { ScheduledConfigsList } from './scheduled-configs-list';
+
+interface DatasetTabsProps {
+  tenantId: string;
+  projectId: string;
+  datasetId: string;
+  items: DatasetItem[];
+  defaultTab?: string;
+  onTabChange?: (tab: string) => void;
+}
+
+export function DatasetTabs({
+  tenantId,
+  projectId,
+  datasetId,
+  items,
+  defaultTab = 'items',
+  onTabChange,
+}: DatasetTabsProps) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const tabFromUrl = searchParams.get('tab');
+  const [activeTab, setActiveTab] = useState(tabFromUrl || defaultTab);
+  const [isCreateItemOpen, setIsCreateItemOpen] = useState(false);
+  const [isCreateRunOpen, setIsCreateRunOpen] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const {
+    data: { canEdit },
+  } = useProjectPermissionsQuery();
+
+  useEffect(() => {
+    if (
+      tabFromUrl &&
+      (tabFromUrl === 'items' || tabFromUrl === 'runs' || tabFromUrl === 'scheduled')
+    ) {
+      setActiveTab(tabFromUrl);
+    }
+  }, [tabFromUrl]);
+
+  const handleTabChange = (tab: string) => {
+    setActiveTab(tab);
+    onTabChange?.(tab);
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('tab', tab);
+    router.push(`?${params.toString()}`, { scroll: false });
+  };
+
+  return (
+    <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
+      <div className="flex items-center justify-between border-b">
+        <TabsList className="border-b bg-transparent p-0 h-auto">
+          <TabsTrigger value="runs" variant="underline" className="h-10">
+            Runs
+          </TabsTrigger>
+          <TabsTrigger value="scheduled" variant="underline" className="h-10">
+            Scheduled Runs
+          </TabsTrigger>
+          <TabsTrigger value="items" variant="underline" className="h-10">
+            Items
+          </TabsTrigger>
+        </TabsList>
+        {activeTab === 'items' && canEdit && (
+          <div className="flex items-center h-10 px-4 gap-1">
+            <CsvUploadDialog
+              tenantId={tenantId}
+              projectId={projectId}
+              datasetId={datasetId}
+              onSuccess={() => {
+                router.refresh();
+              }}
+              trigger={
+                <Button variant="ghost" size="sm" className="h-8">
+                  <FileUp />
+                  Upload CSV
+                </Button>
+              }
+            />
+            <DatasetItemFormDialog
+              tenantId={tenantId}
+              projectId={projectId}
+              datasetId={datasetId}
+              isOpen={isCreateItemOpen}
+              onOpenChange={setIsCreateItemOpen}
+              trigger={
+                <Button variant="ghost" size="sm" className="h-8">
+                  <Plus />
+                  New item
+                </Button>
+              }
+            />
+          </div>
+        )}
+        {activeTab === 'scheduled' && canEdit && (
+          <div className="flex items-center h-10 px-4">
+            <DatasetRunConfigFormDialog
+              tenantId={tenantId}
+              projectId={projectId}
+              datasetId={datasetId}
+              showSchedule
+              onSuccess={() => {
+                setRefreshKey((prev) => prev + 1);
+                router.refresh();
+              }}
+              trigger={
+                <Button variant="ghost" size="sm" className="h-8">
+                  <Plus />
+                  New scheduled run
+                </Button>
+              }
+            />
+          </div>
+        )}
+        {activeTab === 'runs' && canEdit && (
+          <div className="flex items-center h-10 px-4">
+            <DatasetRunConfigFormDialog
+              tenantId={tenantId}
+              projectId={projectId}
+              datasetId={datasetId}
+              isOpen={isCreateRunOpen}
+              onOpenChange={setIsCreateRunOpen}
+              onSuccess={() => {
+                setRefreshKey((prev) => prev + 1);
+                router.refresh();
+              }}
+              trigger={
+                <Button variant="ghost" size="sm" className="h-8">
+                  <Plus />
+                  New run
+                </Button>
+              }
+            />
+          </div>
+        )}
+      </div>
+
+      <TabsContent value="runs" className="mt-6">
+        <DatasetRunsList
+          tenantId={tenantId}
+          projectId={projectId}
+          datasetId={datasetId}
+          refreshKey={refreshKey}
+        />
+      </TabsContent>
+
+      <TabsContent value="scheduled" className="mt-6">
+        <ScheduledConfigsList
+          tenantId={tenantId}
+          projectId={projectId}
+          datasetId={datasetId}
+          refreshKey={refreshKey}
+          onRunTriggered={() => setRefreshKey((prev) => prev + 1)}
+        />
+      </TabsContent>
+
+      <TabsContent value="items" className="mt-6">
+        <DatasetItemsTable
+          tenantId={tenantId}
+          projectId={projectId}
+          datasetId={datasetId}
+          items={items}
+        />
+      </TabsContent>
+    </Tabs>
+  );
+}

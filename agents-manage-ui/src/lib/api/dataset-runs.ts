@@ -1,0 +1,158 @@
+'use server';
+
+import { cache } from 'react';
+import type { ListResponse, SingleResponse } from '../types/response';
+import { makeManagementApiRequest } from './api-config';
+
+export interface DatasetRun {
+  id: string;
+  tenantId: string;
+  projectId: string;
+  datasetId: string;
+  datasetRunConfigId: string;
+  evaluationJobConfigId?: string | null;
+  runConfigName?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface DatasetRunConversation {
+  id: string;
+  conversationId: string;
+  datasetRunId: string;
+  agentId?: string | null;
+  output?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+type DatasetMessageRole = 'user' | 'assistant' | 'system';
+
+interface DatasetRunItemWithConversations {
+  id: string;
+  tenantId: string;
+  projectId: string;
+  datasetId: string;
+  input?: {
+    messages: Array<{ role: DatasetMessageRole; content: unknown }>;
+  } | null;
+  expectedOutput?: Array<{ role: DatasetMessageRole; content: unknown }> | null;
+  createdAt: string;
+  updatedAt: string;
+  conversations: DatasetRunConversation[];
+}
+
+export interface DatasetRunWithConversations extends DatasetRun {
+  runConfigName?: string | null;
+  conversations: DatasetRunConversation[];
+  items: DatasetRunItemWithConversations[];
+}
+
+export async function fetchDatasetRuns(
+  tenantId: string,
+  projectId: string,
+  datasetId: string
+): Promise<ListResponse<DatasetRun>> {
+  return makeManagementApiRequest<ListResponse<DatasetRun>>(
+    `tenants/${tenantId}/projects/${projectId}/evals/dataset-runs/by-dataset/${datasetId}`
+  );
+}
+
+async function $fetchDatasetRun(
+  tenantId: string,
+  projectId: string,
+  runId: string
+): Promise<SingleResponse<DatasetRunWithConversations>> {
+  return makeManagementApiRequest<SingleResponse<DatasetRunWithConversations>>(
+    `tenants/${tenantId}/projects/${projectId}/evals/dataset-runs/${runId}`
+  );
+}
+
+export const fetchDatasetRun = cache($fetchDatasetRun);
+
+export interface DatasetRunInvocation {
+  id: string;
+  tenantId: string;
+  projectId: string;
+  agentId: string;
+  datasetRunId: string;
+  datasetItemId: string | null;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  startedAt?: string | null;
+  completedAt?: string | null;
+  attemptNumber: number;
+  createdAt: string;
+  conversationId?: string | null;
+}
+
+export async function fetchDatasetRunItems(
+  tenantId: string,
+  projectId: string,
+  runId: string
+): Promise<ListResponse<DatasetRunInvocation>> {
+  return makeManagementApiRequest<ListResponse<DatasetRunInvocation>>(
+    `tenants/${tenantId}/projects/${projectId}/evals/dataset-runs/${runId}/items`
+  );
+}
+
+export interface RerunDatasetRunOptions {
+  branchName?: string;
+  evaluatorIds?: string[];
+}
+
+export interface RerunDatasetRunResponse {
+  datasetRunId: string;
+  status: 'pending';
+  totalItems: number;
+}
+
+/**
+ * Rerun a past dataset run. Creates a new run row using the current dataset items
+ * and the source run's run config + evaluators (unless overridden).
+ */
+export async function rerunDatasetRun(
+  tenantId: string,
+  projectId: string,
+  runId: string,
+  options: RerunDatasetRunOptions = {}
+): Promise<RerunDatasetRunResponse> {
+  return makeManagementApiRequest<RerunDatasetRunResponse>(
+    `tenants/${tenantId}/projects/${projectId}/evals/dataset-runs/${runId}/rerun`,
+    {
+      method: 'POST',
+      body: JSON.stringify(options),
+    }
+  );
+}
+
+export interface DatasetRunConversationInfo {
+  datasetRunId: string;
+  datasetItemId: string;
+  conversationId: string;
+}
+
+export async function getDatasetRunByConversation(
+  tenantId: string,
+  projectId: string,
+  conversationId: string
+): Promise<DatasetRunConversationInfo | null> {
+  return makeManagementApiRequest<DatasetRunConversationInfo | null>(
+    `tenants/${tenantId}/projects/${projectId}/evals/dataset-runs/by-conversation/${conversationId}`
+  );
+}
+
+export async function rerunDatasetRunItem(
+  tenantId: string,
+  projectId: string,
+  runId: string,
+  itemId: string
+): Promise<{ invocationId: string; datasetRunId: string; datasetItemId: string }> {
+  return makeManagementApiRequest<{
+    invocationId: string;
+    datasetRunId: string;
+    datasetItemId: string;
+  }>(
+    `tenants/${tenantId}/projects/${projectId}/evals/dataset-runs/${runId}/items/${itemId}/rerun`,
+    { method: 'POST' }
+  );
+}

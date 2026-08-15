@@ -1,0 +1,331 @@
+import {
+  createEvaluationResult,
+  evaluatePassCriteria,
+  generateId,
+  getAgentById,
+  getAgentIdsForEvaluators,
+  getConversation,
+  getEvaluatorById,
+  getEvaluatorsByIds,
+  getProjectMainResolvedRef,
+  updateEvaluationResult,
+  withRef,
+} from '@agent-fabric/agents-core';
+import { manageDbClient } from '../../../../data/db';
+import manageDbPool from '../../../../data/db/manageDbPool';
+import runDbClient from '../../../../data/db/runDbClient';
+import { getLogger } from '../../../../logger';
+import { emitEvaluationFailedWebhook } from '../../../run/services/WebhookDeliveryService';
+import { EvaluationService } from '../../services/EvaluationService';
+
+const logger = getLogger('workflow-evaluate-conversation');
+
+type EvaluationPayload = {
+  tenantId: string;
+  projectId: string;
+  conversationId: string;
+  evaluatorIds: string[];
+  evaluationRunId: string;
+};
+
+async function getConversationStep(payload: EvaluationPayload) {
+  'use step';
+
+  const { tenantId, projectId, conversationId } = payload;
+
+  const conv = await getConversation(runDbClient)({
+    scopes: { tenantId, projectId },
+    conversationId,
+  });
+
+  if (!conv) {
+    throw new Error(`Conversation not found: ${conversationId}`);
+  }
+
+  return conv;
+}
+
+async function getEvaluatorsStep(payload: EvaluationPayload) {
+  'use step';
+  const { tenantId, projectId, evaluatorIds } = payload;
+
+  const projectMain = await getProjectMainResolvedRef(manageDbClient)(tenantId, projectId);
+
+  const evals = await withRef(manageDbPool, projectMain, (db) =>
+    getEvaluatorsByIds(db)({
+      scopes: { tenantId, projectId },
+      evaluatorIds,
+    })
+  );
+
+  return evals;
+}
+
+async function resolveAgentNameStep(params: {
+  tenantId: string;
+  projectId: string;
+  agentId: string | null;
+}): Promise<string | undefined> {
+  'use step';
+
+  const { tenantId, projectId, agentId } = params;
+  if (!agentId) return undefined;
+
+  try {
+    const projectMain = await getProjectMainResolvedRef(manageDbClient)(tenantId, projectId);
+    let name: string | undefined;
+    await withRef(manageDbPool, projectMain, async (db) => {
+      const agent = await getAgentById(db)({ scopes: { tenantId, projectId, agentId } });
+      name = agent?.name;
+    });
+    return name;
+  } catch (err) {
+    logger.warn(
+      { tenantId, projectId, agentId, error: err instanceof Error ? err.message : String(err) },
+      'Failed to resolve agent name for evaluation webhook'
+    );
+    return undefined;
+  }
+}
+
+async function executeEvaluatorStep(
+  payload: EvaluationPayload,
+  evaluatorId: string,
+  conversation: any,
+  agentName?: string
+) {
+  'use step';
+
+  const { tenantId, projectId, conversationId, evaluationRunId } = payload;
+
+  const projectMain = await getProjectMainResolvedRef(manageDbClient)(tenantId, projectId);
+
+  const evaluator = await withRef(manageDbPool, projectMain, (db) =>
+    getEvaluatorById(db)({
+      scopes: { tenantId, projectId, evaluatorId },
+    })
+  );
+
+  if (!evaluator) {
+    throw new Error(`Evaluator not found: ${evaluatorId}`);
+  }
+
+  const evalResult = await createEvaluationResult(runDbClient)({
+    id: generateId(),
+    tenantId,
+    projectId,
+    conversationId,
+    evaluatorId: evaluator.id,
+    evaluationRunId,
+  });
+
+  try {
+    const evaluationService = new EvaluationService();
+    const output = await evaluationService.executeEvaluation({
+      conversation,
+      evaluator,
+      tenantId,
+      projectId,
+    });
+
+    const outputData = (output as { output?: Record<string, unknown> })?.output ?? {};
+    const passCriteriaResult = evaluatePassCriteria(evaluator.passCriteria ?? null, outputData);
+    const verdict = passCriteriaResult.status;
+
+    if (passCriteriaResult.configurationErrors?.length) {
+      logger.error(
+        {
+          evaluatorId: evaluator.id,
+          configurationErrors: passCriteriaResult.configurationErrors,
+          availableOutputFields: Object.keys(outputData),
+        },
+        'Evaluator pass criteria misconfigured'
+      );
+    }
+
+    const updated = await updateEvaluationResult(runDbClient)({
+      scopes: { tenantId, projectId, evaluationResultId: evalResult.id },
+      data: { output: output as any },
+    });
+
+    logger.info(
+      { conversationId, evaluatorId: evaluator.id, resultId: evalResult.id, verdict },
+      'Evaluation completed successfully'
+    );
+
+    try {
+      const failedConditions = (passCriteriaResult.failedConditions ?? []).map((c) => {
+        const val = outputData[c.field];
+        return {
+          field: c.field,
+          operator: c.operator,
+          value: c.value,
+          actual: typeof val === 'number' || typeof val === 'boolean' ? val : 0,
+        };
+      });
+
+      await emitEvaluationFailedWebhook({
+        runDbClient,
+        tenantId,
+        projectId,
+        agentId: conversation.agentId ?? '',
+        agentName,
+        verdict,
+        failedConditions,
+        evaluationResult: {
+          id: evalResult.id,
+          evaluatorId: evaluator.id,
+          conversationId,
+          evaluationRunId,
+        },
+        evaluator: { id: evaluator.id, name: evaluator.name },
+        resolvedRef: projectMain,
+        conversationUserProperties: conversation.userProperties ?? null,
+        conversationProperties: conversation.properties ?? null,
+      });
+    } catch (emitErr) {
+      logger.warn(
+        {
+          error: emitErr instanceof Error ? emitErr.message : String(emitErr),
+          evaluatorId: evaluator.id,
+          resultId: evalResult.id,
+        },
+        'Failed to emit evaluation.failed webhook'
+      );
+    }
+
+    return updated;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    logger.error(
+      { error, conversationId, evaluatorId: evaluator.id, resultId: evalResult.id },
+      'Evaluation execution failed'
+    );
+
+    const failed = await updateEvaluationResult(runDbClient)({
+      scopes: { tenantId, projectId, evaluationResultId: evalResult.id },
+      data: { output: { text: `Evaluation failed: ${errorMessage}` } as any },
+    });
+
+    return failed;
+  }
+}
+
+async function filterEvaluatorsByAgentStep(params: {
+  tenantId: string;
+  projectId: string;
+  agentId: string | null;
+  evaluatorIds: string[];
+}): Promise<string[]> {
+  'use step';
+
+  const { tenantId, projectId, agentId, evaluatorIds } = params;
+
+  if (!agentId) return evaluatorIds;
+
+  const projectMain = await getProjectMainResolvedRef(manageDbClient)(tenantId, projectId);
+
+  const agentIdsMap = await withRef(manageDbPool, projectMain, (db) =>
+    getAgentIdsForEvaluators(db)({
+      scopes: { tenantId, projectId },
+      evaluatorIds,
+    })
+  );
+
+  const filtered = evaluatorIds.filter((evalId) => {
+    const scopedAgents = agentIdsMap.get(evalId);
+    if (!scopedAgents || scopedAgents.length === 0) return true;
+    return scopedAgents.includes(agentId);
+  });
+
+  if (filtered.length < evaluatorIds.length) {
+    logger.info(
+      {
+        agentId,
+        originalCount: evaluatorIds.length,
+        filteredCount: filtered.length,
+        excluded: evaluatorIds.filter((id) => !filtered.includes(id)),
+      },
+      'Filtered evaluators by agent scoping in conversation evaluation'
+    );
+  }
+
+  return filtered;
+}
+
+/**
+ * Step: Log workflow progress
+ */
+async function logStep(message: string, data: Record<string, any>) {
+  'use step';
+  logger.info(data, message);
+}
+
+/**
+ * Main workflow function - orchestrates the evaluation steps.
+ *
+ * IMPORTANT: This runs in a deterministic sandbox.
+ * - Do NOT call Node.js APIs directly here (no DB, no fs, etc.)
+ * - All side effects must happen in step functions
+ */
+async function _evaluateConversationWorkflow(payload: EvaluationPayload) {
+  'use workflow';
+
+  const { tenantId, projectId, conversationId, evaluatorIds } = payload;
+
+  await logStep('Starting conversation evaluation', payload);
+
+  const conversation = await getConversationStep(payload);
+
+  const filteredEvaluatorIds = await filterEvaluatorsByAgentStep({
+    tenantId,
+    projectId,
+    agentId: conversation.agentId,
+    evaluatorIds,
+  });
+
+  if (filteredEvaluatorIds.length === 0) {
+    await logStep('No evaluators applicable after agent scoping', {
+      conversationId,
+      evaluatorIds,
+      agentId: conversation.agentId,
+    });
+    return { success: true, conversationId, resultCount: 0 };
+  }
+
+  const filteredPayload = { ...payload, evaluatorIds: filteredEvaluatorIds };
+  const evaluators = await getEvaluatorsStep(filteredPayload);
+
+  if (evaluators.length === 0) {
+    await logStep('No valid evaluators found', {
+      conversationId,
+      evaluatorIds: filteredEvaluatorIds,
+    });
+    return { success: false, reason: 'No valid evaluators' };
+  }
+
+  const agentName = await resolveAgentNameStep({
+    tenantId,
+    projectId,
+    agentId: conversation.agentId,
+  });
+
+  const results: any[] = [];
+  for (const evaluator of evaluators) {
+    const result = await executeEvaluatorStep(payload, evaluator.id, conversation, agentName);
+    results.push(result);
+  }
+
+  return {
+    success: true,
+    conversationId,
+    resultCount: results.length,
+  };
+}
+
+// This ID must match what workflow:build generates in .well-known/workflow/v1/flow.cjs
+export const evaluateConversationWorkflow = Object.assign(_evaluateConversationWorkflow, {
+  workflowId:
+    'workflow//./src/domains/evals/workflow/functions/evaluateConversation//_evaluateConversationWorkflow',
+});

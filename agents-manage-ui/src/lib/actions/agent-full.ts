@@ -1,0 +1,212 @@
+'use server';
+
+/**
+ * Server Actions for Agent Full Operations
+ *
+ * These server actions wrap the AgentFull REST API endpoints and provide
+ * type-safe functions that can be called from React components.
+ */
+
+import type { AgentApiInsert } from '@agent-fabric/agents-core/client-exports';
+import { revalidatePath } from 'next/cache';
+import {
+  createAgent as apiCreateAgent,
+  deleteFullAgent as apiDeleteFullAgent,
+  getFullAgent as apiGetFullAgent,
+  updateAgent as apiUpdateAgent,
+  updateFullAgent as apiUpdateFullAgent,
+} from '../api/agent-full-client';
+import type { FullAgentPayload, FullAgentResponse } from '../types/agent-full';
+import { ApiError } from '../types/errors';
+
+/**
+ * Result type for server actions - follows a consistent pattern
+ */
+type ActionResult<T = void> =
+  | {
+      success: true;
+      data: T;
+    }
+  | {
+      success: false;
+      error: string;
+      code?: string;
+    };
+
+export async function createAgentAction(
+  tenantId: string,
+  projectId: string,
+  agentData: AgentApiInsert
+): Promise<ActionResult<AgentApiInsert>> {
+  try {
+    const response = await apiCreateAgent(tenantId, projectId, agentData);
+    // Revalidate relevant pages
+    revalidatePath(`/${tenantId}/projects/${projectId}/agents`);
+    revalidatePath(`/${tenantId}/projects/${projectId}/agents/${response.data.id}`);
+
+    return {
+      success: true,
+      data: response.data,
+    };
+  } catch (error) {
+    if (error instanceof ApiError) {
+      return {
+        success: false,
+        error: error.message,
+        code: error.error.code,
+      };
+    }
+
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to create agent',
+      code: 'validation_error',
+    };
+  }
+}
+
+export async function updateAgentAction(
+  tenantId: string,
+  projectId: string,
+  agentId: string,
+  agentData: AgentApiInsert
+): Promise<ActionResult<AgentApiInsert>> {
+  try {
+    const response = await apiUpdateAgent(tenantId, projectId, agentId, agentData);
+    // Revalidate relevant pages
+    revalidatePath(`/${tenantId}/projects/${projectId}/agents`);
+    revalidatePath(`/${tenantId}/projects/${projectId}/agents/${response.data.id}`);
+
+    return {
+      success: true,
+      data: response.data,
+    };
+  } catch (error) {
+    if (error instanceof ApiError) {
+      return {
+        success: false,
+        error: error.message,
+        code: error.error.code,
+      };
+    }
+
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to update agent',
+      code: 'validation_error',
+    };
+  }
+}
+
+/**
+ * Get a full agent by ID
+ */
+export async function getFullAgentAction(
+  tenantId: string,
+  projectId: string,
+  agentId: string
+): Promise<ActionResult<FullAgentResponse>> {
+  try {
+    const response = await apiGetFullAgent(tenantId, projectId, agentId);
+
+    return {
+      success: true,
+      data: response.data,
+    };
+  } catch (error) {
+    if (error instanceof ApiError) {
+      return {
+        success: false,
+        error: error.message,
+        code: error.error.code,
+      };
+    }
+
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to get agent',
+      code: 'unknown_error',
+    };
+  }
+}
+
+/**
+ * Update or create a full agent (upsert)
+ */
+export async function updateFullAgentAction(
+  tenantId: string,
+  projectId: string,
+  agentId: string,
+  agentData: FullAgentPayload
+): Promise<ActionResult<FullAgentResponse>> {
+  try {
+    // Ensure the agent ID matches
+    if (agentId !== agentData.id) {
+      return {
+        success: false,
+        error: `Agent ID mismatch: expected ${agentId}, got ${agentData.id}`,
+        code: 'bad_request',
+      };
+    }
+
+    const response = await apiUpdateFullAgent(tenantId, projectId, agentId, agentData);
+
+    // Revalidate relevant pages
+    revalidatePath(`/${tenantId}/projects/${projectId}/agents`);
+    revalidatePath(`/${tenantId}/projects/${projectId}/agents/${agentId}`);
+
+    return {
+      success: true,
+      data: response.data,
+    };
+  } catch (error) {
+    if (error instanceof ApiError) {
+      return {
+        success: false,
+        error: error.message,
+        code: error.error.code,
+      };
+    }
+
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to update agent',
+      code: 'validation_error',
+    };
+  }
+}
+
+/**
+ * Delete a full agent
+ */
+export async function deleteFullAgentAction(
+  tenantId: string,
+  projectId: string,
+  agentId: string
+): Promise<ActionResult> {
+  try {
+    await apiDeleteFullAgent(tenantId, projectId, agentId);
+
+    // Revalidate relevant pages
+    revalidatePath(`/${tenantId}/projects/${projectId}/agents`);
+
+    return {
+      success: true,
+      data: undefined,
+    };
+  } catch (error) {
+    if (error instanceof ApiError) {
+      return {
+        success: false,
+        error: error.message,
+        code: error.error.code,
+      };
+    }
+
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to delete agent',
+      code: 'unknown_error',
+    };
+  }
+}

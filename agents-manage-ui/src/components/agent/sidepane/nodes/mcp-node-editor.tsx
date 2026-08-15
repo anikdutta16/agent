@@ -1,0 +1,461 @@
+import type { Node } from '@xyflow/react';
+import { AlertTriangle, Check, CircleAlert, Loader2, Shield, Trash2, X } from 'lucide-react';
+import Link from 'next/link';
+import { useParams } from 'next/navigation';
+import { useEffect, useRef } from 'react';
+import { useWatch } from 'react-hook-form';
+import { toast } from 'sonner';
+import { FullAgentToolSchema } from '@/components/agent/form/validation';
+import { GenericInput } from '@/components/form/generic-input';
+import { GenericJsonEditor } from '@/components/form/generic-json-editor';
+import { MCPToolImage } from '@/components/mcp-servers/mcp-tool-image';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import { ExternalLink } from '@/components/ui/external-link';
+import { Label } from '@/components/ui/label';
+import { Separator } from '@/components/ui/separator';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { useFullAgentFormContext } from '@/contexts/full-agent-form';
+import { getMcpRelationFormKey } from '@/features/agent/domain';
+import { useDeleteNode } from '@/hooks/use-delete-node';
+import { useMcpToolStatusQuery, useMcpToolsQuery } from '@/lib/query/mcp-tools';
+import { useProjectPermissionsQuery } from '@/lib/query/projects';
+import { headersTemplate } from '@/lib/templates';
+import { createLookup, isRequired } from '@/lib/utils';
+import { getActiveTools } from '@/lib/utils/active-tools';
+import { findOrphanedTools } from '@/lib/utils/orphaned-tools-detector';
+import type { MCPNodeData } from '../../configuration/node-types';
+import { SchemaOverrideBadge } from './schema-override-badge';
+
+interface MCPServerNodeEditorProps {
+  selectedNode: Pick<Node<MCPNodeData>, 'id' | 'data'>;
+}
+
+export function MCPServerNodeEditor({ selectedNode }: MCPServerNodeEditorProps) {
+  const form = useFullAgentFormContext();
+  const { toolId } = selectedNode.data;
+  const nodeId = selectedNode.id;
+  const relationKey = getMcpRelationFormKey({ nodeId });
+  const [tool, mcpRelation] = useWatch({
+    control: form.control,
+    name: [`tools.${toolId}`, `mcpRelations.${relationKey}`],
+  });
+
+  const path = <K extends string>(key: K) => `tools.${toolId}.${key}` as const;
+  const relationPath = <K extends string>(key: K) => `mcpRelations.${relationKey}.${key}` as const;
+
+  const {
+    data: { canEdit },
+  } = useProjectPermissionsQuery();
+  const { deleteNode } = useDeleteNode(nodeId);
+  const { tenantId, projectId } = useParams<{ tenantId: string; projectId: string }>();
+  const { data: mcpTools } = useMcpToolsQuery({ skipDiscovery: true });
+  const skeletonToolLookup = createLookup(mcpTools);
+
+  // Lazy-load actual tool status
+  const { data: liveToolData, isFetching: isLoadingToolStatus } = useMcpToolStatusQuery({
+    tenantId,
+    projectId,
+    toolId,
+    enabled: !!toolId,
+  });
+
+  // Use live data if available, fall back to skeleton from store
+  const skeletonToolData = skeletonToolLookup[toolId];
+  const toolData = liveToolData ?? skeletonToolData;
+  const activeTools = getActiveTools({
+    availableTools: toolData?.availableTools,
+    activeTools: tool && tool.config.type === 'mcp' ? tool.config.mcp.activeTools : undefined,
+  });
+  const selectedTools = mcpRelation?.selectedTools ?? null;
+  const orphanedTools = findOrphanedTools(selectedTools, activeTools);
+  // Track if we've already shown the warning for this node to avoid repeated toasts
+  const hasShownOrphanedWarningRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (liveToolData && orphanedTools.length && hasShownOrphanedWarningRef.current !== nodeId) {
+      hasShownOrphanedWarningRef.current = nodeId;
+      const toolText = orphanedTools.length > 1 ? 'tools are' : 'tool is';
+      toast.warning(
+        `${orphanedTools.length} selected ${toolText} no longer available: ${orphanedTools.join(', ')}. Uncheck to remove.`,
+        { closeButton: true, duration: 6000 }
+      );
+    }
+  }, [liveToolData, orphanedTools, nodeId]);
+  // MCP was removed, fix race condition when mcpRelation.headers will be set as ''
+  if (!mcpRelation) {
+    return;
+  }
+  // Handle missing tool data
+  if (!toolData || !tool) {
+    return (
+      <div className="flex items-center justify-center p-4">
+        <div className="text-sm text-muted-foreground">Tool data not found for {toolId}.</div>
+      </div>
+    );
+  }
+  const currentToolPolicies = mcpRelation?.toolPolicies ?? {};
+  const toolOverrides = tool.config.type === 'mcp' ? tool.config.mcp.toolOverrides : undefined;
+
+  const toggleToolSelection = (toolName: string) => {
+    // Handle null case (all tools selected) - convert to array of all tool names
+    const currentSelections =
+      selectedTools === null ? activeTools?.map((tool) => tool.name) || [] : [...selectedTools];
+    const isSelected = currentSelections.includes(toolName);
+
+    let newSelections: string[];
+    if (isSelected) {
+      newSelections = currentSelections.filter((t) => t !== toolName);
+    } else {
+      newSelections = [...currentSelections, toolName];
+    }
+
+    const allToolNames = activeTools?.map((tool) => tool.name) || [];
+    const finalSelection: string[] | null =
+      newSelections.length === allToolNames.length &&
+      allToolNames.every((toolName) => newSelections.includes(toolName))
+        ? null // All tools are selected, use null to represent this
+        : newSelections;
+
+    // When deselecting a tool, remove its approval policy
+    const updatedPolicies = { ...currentToolPolicies };
+    if (isSelected && !newSelections.includes(toolName)) {
+      delete updatedPolicies[toolName];
+    }
+
+    form.setValue(relationPath('selectedTools'), finalSelection, { shouldDirty: true });
+    form.setValue(relationPath('toolPolicies'), updatedPolicies, { shouldDirty: true });
+  };
+
+  const toggleToolApproval = (toolName: string) => {
+    const updatedPolicies = { ...currentToolPolicies };
+
+    if (updatedPolicies[toolName]?.needsApproval) {
+      // Remove approval requirement
+      delete updatedPolicies[toolName];
+    } else {
+      // Add approval requirement
+      updatedPolicies[toolName] = { needsApproval: true };
+    }
+
+    form.setValue(relationPath('toolPolicies'), updatedPolicies, { shouldDirty: true });
+  };
+
+  const toggleAllApprovalsForEnabledTools = () => {
+    // Get enabled tool names
+    const enabledToolNames =
+      selectedTools === null
+        ? activeTools?.map((tool) => tool.name) || []
+        : selectedTools.filter((toolName) => activeTools?.some((tool) => tool.name === toolName));
+
+    if (enabledToolNames.length === 0) return;
+
+    // Check if all enabled tools currently need approval
+    const allEnabledNeedApproval = enabledToolNames.every(
+      (toolName) => currentToolPolicies[toolName]?.needsApproval
+    );
+
+    const updatedPolicies = { ...currentToolPolicies };
+
+    if (allEnabledNeedApproval) {
+      // Remove approval from all enabled tools
+      for (const toolName of enabledToolNames) {
+        delete updatedPolicies[toolName];
+      }
+    } else {
+      // Add approval to all enabled tools
+      for (const toolName of enabledToolNames) {
+        updatedPolicies[toolName] = { needsApproval: true };
+      }
+    }
+
+    form.setValue(relationPath('toolPolicies'), updatedPolicies, { shouldDirty: true });
+  };
+
+  return (
+    <div className="space-y-8">
+      <div className="flex items-center gap-2 text-sm">
+        <MCPToolImage imageUrl={tool.imageUrl} name={tool.name} size={32} className="rounded-lg" />
+        <b className="truncate">{tool.name}</b>
+      </div>
+      {/* Warning banner for needs_auth status */}
+      {toolData.status === 'needs_auth' && (
+        <Alert className="border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/20 [&>svg]:text-amber-600">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle className="text-foreground">Authentication Required</AlertTitle>
+          <AlertDescription className="text-muted-foreground">
+            This MCP server requires authentication to work properly.{' '}
+            <Link
+              href={`/${tenantId}/projects/${projectId}/mcp-servers/${toolId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium text-foreground underline hover:no-underline"
+            >
+              Go to MCP Server details to connect
+            </Link>
+          </AlertDescription>
+        </Alert>
+      )}
+      <GenericInput
+        control={form.control}
+        name={path('id')}
+        label="Id"
+        disabled
+        isRequired={isRequired(FullAgentToolSchema, 'id')}
+      />
+      <GenericInput
+        control={form.control}
+        name={path('name')}
+        label="Name"
+        placeholder="MCP server"
+        disabled
+        isRequired={isRequired(FullAgentToolSchema, 'name')}
+      />
+      <GenericInput
+        control={form.control}
+        name={path('config.mcp.server.url')}
+        label="URL"
+        placeholder="https://mcp.localhost"
+        disabled
+        isRequired={isRequired(FullAgentToolSchema, 'config.mcp.server.url')}
+      />
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Label>Tool Configuration</Label>
+            <Badge variant="count">
+              {
+                selectedTools === null
+                  ? (activeTools?.length ?? 0) // All tools selected
+                  : selectedTools.length // Count all selected tools (including orphaned ones)
+              }
+            </Badge>
+          </div>
+          {activeTools &&
+            activeTools.length > 1 &&
+            (() => {
+              const allToolsSelected =
+                selectedTools === null || selectedTools.length === activeTools.length;
+
+              return (
+                <>
+                  {allToolsSelected ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        form.setValue(relationPath('selectedTools'), [], { shouldDirty: true });
+                        form.setValue(relationPath('toolPolicies'), {}, { shouldDirty: true });
+                      }}
+                    >
+                      <X className="w-4 h-4 text-muted-foreground" />
+                      Deselect all
+                    </Button>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        form.setValue(relationPath('selectedTools'), null, { shouldDirty: true });
+                      }}
+                    >
+                      <Check className="w-4 h-4 text-muted-foreground" />
+                      Select all
+                    </Button>
+                  )}
+                </>
+              );
+            })()}
+        </div>
+
+        {isLoadingToolStatus ? (
+          <div className="flex items-center justify-center py-8 text-sm text-muted-foreground border rounded-md bg-muted/10">
+            <Loader2 className="h-4 w-4 animate-spin mr-2" />
+            Loading...
+          </div>
+        ) : (activeTools && activeTools.length > 0) || orphanedTools.length > 0 ? (
+          <div className="border rounded-md">
+            {/* Header */}
+            <div className="grid grid-cols-[1fr_auto] gap-4 px-3 py-2.5 text-xs font-medium text-muted-foreground rounded-t-md border-b">
+              <div>Tool</div>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div className="flex items-center gap-1.5 cursor-help">
+                    <Shield className="w-3 h-3" />
+                    Needs Approval?
+                    {(() => {
+                      const enabledToolNames =
+                        selectedTools === null
+                          ? activeTools?.map((tool) => tool.name) || []
+                          : selectedTools.filter((toolName) =>
+                              activeTools?.some((tool) => tool.name === toolName)
+                            );
+                      const hasEnabledTools = enabledToolNames.length > 0;
+                      const allEnabledNeedApproval =
+                        hasEnabledTools &&
+                        enabledToolNames.every(
+                          (toolName) => currentToolPolicies[toolName]?.needsApproval
+                        );
+                      const someEnabledNeedApproval =
+                        hasEnabledTools &&
+                        enabledToolNames.some(
+                          (toolName) => currentToolPolicies[toolName]?.needsApproval
+                        );
+
+                      return (
+                        <Checkbox
+                          checked={
+                            allEnabledNeedApproval
+                              ? true
+                              : someEnabledNeedApproval
+                                ? 'indeterminate'
+                                : false
+                          }
+                          disabled={!hasEnabledTools}
+                          onCheckedChange={() => toggleAllApprovalsForEnabledTools()}
+                          onClick={(e) => e.stopPropagation()}
+                          aria-label="Toggle approval for all enabled tools"
+                        />
+                      );
+                    })()}
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs">
+                  <div className="text-sm">
+                    Tools requiring approval will pause execution and wait for user confirmation
+                    before running. Use the checkbox to toggle approval for all enabled tools.{' '}
+                    <a
+                      href="https://localhost/visual-builder/tools/tool-approvals"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="underline hover:no-underline"
+                    >
+                      Learn more
+                    </a>
+                  </div>
+                </TooltipContent>
+              </Tooltip>
+            </div>
+
+            {/* Active tools */}
+            {activeTools?.map((tool) => {
+              const isSelected =
+                selectedTools === null
+                  ? true // If null, all tools are selected
+                  : selectedTools.includes(tool.name);
+              const needsApproval = currentToolPolicies[tool.name]?.needsApproval || false;
+              const override = toolOverrides?.[tool.name];
+              const displayName = override?.displayName || tool.name;
+              const displayDescription = override?.description || tool.description;
+              const hasSchemaOverride = !!override?.schema;
+              const hasMetadataOverride = !!override?.displayName || !!override?.description;
+
+              return (
+                <div
+                  key={tool.name}
+                  className="grid grid-cols-[1fr_auto] gap-4 px-3 py-2 hover:bg-muted/30 transition-colors border-b last:border-b-0"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Checkbox
+                      checked={isSelected}
+                      onCheckedChange={() => toggleToolSelection(tool.name)}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">{displayName}</div>
+                      <div className="text-xs text-muted-foreground line-clamp-1">
+                        {displayDescription}
+                      </div>
+                      {hasMetadataOverride && !hasSchemaOverride && (
+                        <Badge variant="violet" className="mt-1 uppercase">
+                          Modified
+                        </Badge>
+                      )}
+                      {hasSchemaOverride && <SchemaOverrideBadge schema={override.schema} />}
+                    </div>
+                  </div>
+                  <div className="items-center">
+                    <Checkbox
+                      checked={needsApproval}
+                      disabled={!isSelected}
+                      onCheckedChange={() => toggleToolApproval(tool.name)}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* Orphaned tools (selected but no longer available) */}
+            {orphanedTools.map((toolName) => {
+              const needsApproval = currentToolPolicies[toolName]?.needsApproval || false;
+
+              return (
+                <div
+                  key={`orphaned-${toolName}`}
+                  className="grid grid-cols-[1fr_auto] gap-4 px-3 py-2 bg-amber-50 dark:bg-amber-950/20 border-b last:border-b-0 border-amber-200 dark:border-amber-800"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Checkbox checked onCheckedChange={() => toggleToolSelection(toolName)} />
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <div className="flex-1 min-w-0 flex items-center gap-2">
+                          <div className="flex-1 max-w-full">
+                            <div className="text-sm font-medium truncate">{toolName}</div>
+                            <div className="flex items-center gap-1">
+                              <CircleAlert className="w-3 h-3 text-amber-500 shrink-0" />
+                              <div className="text-xs text-amber-600 dark:text-amber-400">
+                                Tool no longer available
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-xs text-sm">
+                        This tool was selected but is not available in the MCP server. Uncheck to
+                        remove it.
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
+                  {/* Needs Approval Checkbox hidden b/c we don't support it yet */}
+                  <div className="items-center">
+                    <Checkbox
+                      checked={needsApproval}
+                      onCheckedChange={() => toggleToolApproval(toolName)}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="text-sm text-muted-foreground py-8 text-center border rounded-md bg-muted/10">
+            No tools available for this MCP server
+          </div>
+        )}
+      </div>
+      <GenericJsonEditor
+        control={form.control}
+        name={relationPath('headers')}
+        label="Headers"
+        placeholder={headersTemplate}
+        customTemplate={headersTemplate}
+      />
+      <ExternalLink href={`/${tenantId}/projects/${projectId}/mcp-servers/${toolId}/edit`}>
+        View MCP Server
+      </ExternalLink>
+      {canEdit && (
+        <>
+          <Separator />
+          <div className="flex justify-end">
+            <Button variant="destructive-outline" size="sm" onClick={deleteNode}>
+              <Trash2 className="size-4" />
+              Delete
+            </Button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,165 @@
+'use client';
+import { type NodeProps, Position } from '@xyflow/react';
+import { Bot, Component, Library, type LucideIcon } from 'lucide-react';
+import type { FC } from 'react';
+import { useWatch } from 'react-hook-form';
+import { TruncateBadge } from '@/components/agent/nodes/mcp-node';
+import { AnthropicIcon } from '@/components/icons/anthropic';
+import { GoogleIcon } from '@/components/icons/google';
+import { OpenAIIcon } from '@/components/icons/openai';
+import { Badge } from '@/components/ui/badge';
+import { getModelInheritanceStatus } from '@/components/ui/inheritance-indicator';
+import { STATIC_LABELS } from '@/constants/theme';
+import { useFullAgentFormContext } from '@/contexts/full-agent-form';
+import { NODE_WIDTH } from '@/features/agent/domain/deserialize';
+import { useProcessedErrors } from '@/hooks/use-processed-errors';
+import { useArtifactComponentsQuery } from '@/lib/query/artifact-components';
+import { useDataComponentsQuery } from '@/lib/query/data-components';
+import { useProjectQuery } from '@/lib/query/projects';
+import { cn, createLookup } from '@/lib/utils';
+import {
+  type AgentNodeData,
+  agentNodeSourceHandleId,
+  agentNodeTargetHandleId,
+  getNodeStatus,
+} from '../configuration/node-types';
+import { ErrorIndicator } from '../error-display/error-indicator';
+import { BaseNode, BaseNodeContent, BaseNodeHeader, BaseNodeHeaderTitle } from './base-node';
+import { Handle } from './handle';
+import { NodeTab } from './node-tab';
+
+const ListSection: FC<{
+  title: string;
+  items: string[];
+  Icon: LucideIcon;
+}> = ({ title, items, Icon }) => {
+  return (
+    <div className="flex flex-col gap-3 pt-2">
+      <div className="flex items-center justify-start gap-2">
+        <Icon className="size-3 text-xs text-muted-foreground" />
+        <div className="text-xs uppercase font-mono text-muted-foreground">{title}</div>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {items?.map((name) => (
+          <TruncateBadge key={name}>{name}</TruncateBadge>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+export function SubAgentNode({ data, selected, id }: NodeProps & { data: AgentNodeData }) {
+  const status = getNodeStatus(data);
+  const { control } = useFullAgentFormContext();
+  const formKey = `subAgents.${id}` as const;
+  const [subAgent, defaultSubAgentNodeId, agentModel] = useWatch({
+    control,
+    name: [formKey, 'defaultSubAgentNodeId', 'models'],
+  });
+  const processedErrors = useProcessedErrors('subAgents', id);
+  const { data: project } = useProjectQuery();
+  const { data: artifactComponents } = useArtifactComponentsQuery();
+  const { data: dataComponents } = useDataComponentsQuery();
+  if (!subAgent) {
+    return (
+      <BaseNode>
+        <BaseNodeContent className="text-sm text-destructive">{`Sub Agent "${id}" not found.`}</BaseNodeContent>
+      </BaseNode>
+    );
+  }
+  const hasErrors = processedErrors.length > 0;
+  const {
+    name,
+    description,
+    dataComponents: dataComponentIds = [],
+    artifactComponents: artifactComponentIds = [],
+  } = subAgent;
+  const isDefault = id === defaultSubAgentNodeId;
+
+  const dataComponentsById = createLookup(dataComponents);
+  const artifactComponentsById = createLookup(artifactComponents);
+
+  const dataComponentNames =
+    dataComponentIds.map((id) => dataComponentsById[id]?.name).filter(Boolean) || [];
+  const artifactComponentNames =
+    artifactComponentIds.map((id) => artifactComponentsById[id]?.name).filter(Boolean) || [];
+  const isDelegating = status === 'delegating';
+  const isInvertedDelegating = status === 'inverted-delegating';
+  const isExecuting = status === 'executing';
+
+  const ModelName = {
+    subAgent: subAgent.models?.base.model,
+    agent: agentModel.base.model,
+    project: project?.models?.base.model ?? '',
+  };
+
+  const modelName = ModelName.subAgent ?? ModelName.agent ?? ModelName.project;
+  const [modelSlug] = modelName.split('/', 1);
+
+  const ModelIcon = {
+    openai: OpenAIIcon,
+    anthropic: AnthropicIcon,
+    google: GoogleIcon,
+  }[modelSlug];
+
+  const { inheritedFrom } = getModelInheritanceStatus(
+    'subagent',
+    ModelName.subAgent,
+    ModelName.agent,
+    ModelName.project
+  );
+
+  return (
+    <BaseNode
+      isSelected={selected || isDelegating}
+      className={cn(
+        isDefault && 'rounded-tl-none',
+        hasErrors && 'ring-2 ring-red-300 border-red-300',
+        isExecuting && 'node-executing',
+        isInvertedDelegating && 'node-delegating-inverted'
+      )}
+      style={{ width: NODE_WIDTH }}
+    >
+      {isDefault && <NodeTab isSelected={selected || isDelegating}>Default</NodeTab>}
+      <BaseNodeHeader className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <Bot className="size-4 text-muted-foreground" />
+          <BaseNodeHeaderTitle>
+            {name || <i className="text-muted-foreground/50">No name</i>}
+          </BaseNodeHeaderTitle>
+        </div>
+        <Badge variant="primary" className="text-xs uppercase">
+          Sub Agent
+        </Badge>
+        {hasErrors && <ErrorIndicator errors={processedErrors} />}
+      </BaseNodeHeader>
+      <BaseNodeContent>
+        <div className="text-sm text-muted-foreground">
+          {description || <i className="text-muted-foreground/50">No description</i>}
+        </div>
+        {modelName && (
+          <Badge className="text-xs max-w-full" variant="code">
+            {ModelIcon && <ModelIcon className="size-3 shrink-0" />}
+            <span className="truncate">{modelName}</span> {inheritedFrom && '(inherited)'}
+          </Badge>
+        )}
+        {dataComponentNames?.length > 0 && (
+          <ListSection
+            title={STATIC_LABELS.components}
+            items={dataComponentNames}
+            Icon={Component}
+          />
+        )}
+        {artifactComponentNames?.length > 0 && (
+          <ListSection
+            title={STATIC_LABELS.artifacts}
+            items={artifactComponentNames}
+            Icon={Library}
+          />
+        )}
+      </BaseNodeContent>
+      <Handle id={agentNodeTargetHandleId} type="source" position={Position.Top} isConnectable />
+      <Handle id={agentNodeSourceHandleId} type="source" position={Position.Bottom} isConnectable />
+    </BaseNode>
+  );
+}

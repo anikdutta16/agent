@@ -1,0 +1,135 @@
+'use server';
+
+import type {
+  CredentialReferenceApiInsert,
+  CredentialReferenceApiSelect,
+  ExternalAgentApiSelect,
+  McpTool,
+} from '@agent-fabric/agents-core';
+import { cache } from 'react';
+import type { ListResponse, SingleResponse } from '../types/response';
+// Default configuration
+import { makeManagementApiRequest } from './api-config';
+
+// Re-export types from core package for convenience
+export type Credential = CredentialReferenceApiSelect & {
+  tools?: McpTool[];
+  externalAgents?: ExternalAgentApiSelect[];
+};
+
+/**
+ * List all credentials for the current tenant
+ */
+export async function fetchCredentials(
+  tenantId: string,
+  projectId: string,
+  page = 1,
+  pageSize = 100
+): Promise<Credential[]> {
+  const params = new URLSearchParams({
+    page: page.toString(),
+    limit: pageSize.toString(),
+  });
+
+  const response = await makeManagementApiRequest<ListResponse<CredentialReferenceApiSelect>>(
+    `tenants/${tenantId}/projects/${projectId}/credentials?${params}`
+  );
+
+  // Cast to Credential type (includes optional tools field)
+  return response.data as Credential[];
+}
+
+/**
+ * Get a single credential by ID
+ */
+async function $fetchCredential(
+  tenantId: string,
+  projectId: string,
+  id: string
+): Promise<Credential> {
+  const response = await makeManagementApiRequest<SingleResponse<CredentialReferenceApiSelect>>(
+    `tenants/${tenantId}/projects/${projectId}/credentials/${id}`
+  );
+
+  // Cast to Credential type (includes optional tools field)
+  return response.data as Credential;
+}
+
+export const fetchCredential = cache($fetchCredential);
+
+/**
+ * Create a new credential
+ */
+export async function createCredential(
+  tenantId: string,
+  projectId: string,
+  data: CredentialReferenceApiInsert
+): Promise<Credential> {
+  const response = await makeManagementApiRequest<SingleResponse<CredentialReferenceApiSelect>>(
+    `tenants/${tenantId}/projects/${projectId}/credentials`,
+    {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }
+  );
+
+  // Cast to Credential type (includes optional tools field)
+  return response.data as Credential;
+}
+
+/**
+ * Update an existing credential
+ */
+export async function updateCredential(
+  tenantId: string,
+  projectId: string,
+  id: string,
+  data: Partial<CredentialReferenceApiInsert>
+): Promise<Credential> {
+  const response = await makeManagementApiRequest<SingleResponse<CredentialReferenceApiSelect>>(
+    `tenants/${tenantId}/projects/${projectId}/credentials/${id}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }
+  );
+
+  // Cast to Credential type (includes optional tools field)
+  return response.data as Credential;
+}
+
+/**
+ * Delete a credential
+ */
+export async function deleteCredential(
+  tenantId: string,
+  projectId: string,
+  id: string
+): Promise<void> {
+  await makeManagementApiRequest<void>(
+    `tenants/${tenantId}/projects/${projectId}/credentials/${id}`,
+    {
+      method: 'DELETE',
+    }
+  );
+}
+
+/**
+ * Get user-scoped credential for a specific tool
+ * Returns null if the user hasn't connected yet
+ */
+export async function fetchUserScopedCredential(
+  tenantId: string,
+  projectId: string,
+  toolId: string
+): Promise<Credential | null> {
+  try {
+    const response = await makeManagementApiRequest<SingleResponse<CredentialReferenceApiSelect>>(
+      `tenants/${tenantId}/projects/${projectId}/tools/${toolId}/user-credential`
+    );
+    return response.data as Credential;
+  } catch {
+    // User hasn't connected yet
+    return null;
+  }
+}

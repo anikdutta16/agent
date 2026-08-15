@@ -1,0 +1,367 @@
+import { and, count, desc, eq, sql } from 'drizzle-orm';
+import type { AgentsManageDatabaseClient } from '../../db/manage/manage-client';
+import { credentialReferences, externalAgents, tools } from '../../db/manage/manage-schema';
+import type {
+  CredentialReferenceInsert,
+  CredentialReferenceSelect,
+  CredentialReferenceUpdate,
+  ExternalAgentSelect,
+  PaginationConfig,
+  ProjectScopeConfig,
+  ToolSelect,
+} from '../../types/index';
+import { isUniqueConstraintError } from '../../utils/error';
+import { projectScopedWhere } from './scope-helpers';
+
+export type CredentialReferenceWithResources = CredentialReferenceSelect & {
+  tools: ToolSelect[];
+  externalAgents: ExternalAgentSelect[];
+};
+
+/**
+ * Get a credential reference by ID
+ */
+export const getCredentialReference =
+  (db: AgentsManageDatabaseClient) =>
+  async (params: {
+    scopes: ProjectScopeConfig;
+    id: string;
+  }): Promise<CredentialReferenceSelect | undefined> => {
+    return await db.query.credentialReferences.findFirst({
+      where: and(
+        projectScopedWhere(credentialReferences, params.scopes),
+        eq(credentialReferences.id, params.id)
+      ),
+    });
+  };
+
+/**
+ * Get a user-scoped credential reference by toolId and userId
+ */
+export const getUserScopedCredentialReference =
+  (db: AgentsManageDatabaseClient) =>
+  async (params: {
+    scopes: ProjectScopeConfig;
+    toolId: string;
+    userId: string;
+  }): Promise<CredentialReferenceSelect | undefined> => {
+    return await db.query.credentialReferences.findFirst({
+      where: and(
+        projectScopedWhere(credentialReferences, params.scopes),
+        eq(credentialReferences.toolId, params.toolId),
+        eq(credentialReferences.userId, params.userId)
+      ),
+    });
+  };
+
+/**
+ * Get a credential reference by ID with its related tools
+ */
+export const getCredentialReferenceWithResources =
+  (db: AgentsManageDatabaseClient) =>
+  async (params: {
+    scopes: ProjectScopeConfig;
+    id: string;
+  }): Promise<CredentialReferenceWithResources | undefined> => {
+    const [credential, relatedTools, relatedExternalAgents] = await Promise.all([
+      db.query.credentialReferences.findFirst({
+        where: and(
+          projectScopedWhere(credentialReferences, params.scopes),
+          eq(credentialReferences.id, params.id)
+        ),
+      }),
+      db
+        .select()
+        .from(tools)
+        .where(
+          and(projectScopedWhere(tools, params.scopes), eq(tools.credentialReferenceId, params.id))
+        ),
+      db
+        .select()
+        .from(externalAgents)
+        .where(
+          and(
+            projectScopedWhere(externalAgents, params.scopes),
+            eq(externalAgents.credentialReferenceId, params.id)
+          )
+        ),
+    ]);
+
+    if (!credential) {
+      return undefined;
+    }
+
+    return {
+      ...credential,
+      tools: relatedTools,
+      externalAgents: relatedExternalAgents,
+    };
+  };
+
+/**
+ * List all credential references for a tenant/project
+ */
+export const listCredentialReferences =
+  (db: AgentsManageDatabaseClient) =>
+  async (params: { scopes: ProjectScopeConfig }): Promise<CredentialReferenceSelect[]> => {
+    return await db.query.credentialReferences.findMany({
+      where: projectScopedWhere(credentialReferences, params.scopes),
+      orderBy: [desc(credentialReferences.createdAt)],
+    });
+  };
+
+/**
+ * List credential references with pagination
+ */
+export const listCredentialReferencesPaginated =
+  (db: AgentsManageDatabaseClient) =>
+  async (params: {
+    scopes: ProjectScopeConfig;
+    pagination?: PaginationConfig;
+  }): Promise<{
+    data: CredentialReferenceSelect[];
+    pagination: { page: number; limit: number; total: number; pages: number };
+  }> => {
+    const page = params.pagination?.page || 1;
+    const limit = Math.min(params.pagination?.limit || 10, 100);
+    const offset = (page - 1) * limit;
+
+    const whereClause = projectScopedWhere(credentialReferences, params.scopes);
+
+    const [data, totalResult] = await Promise.all([
+      db
+        .select()
+        .from(credentialReferences)
+        .where(whereClause)
+        .limit(limit)
+        .offset(offset)
+        .orderBy(desc(credentialReferences.createdAt)),
+      db.select({ count: sql`COUNT(*)` }).from(credentialReferences).where(whereClause),
+    ]);
+
+    const total = Number(totalResult[0]?.count || 0);
+    const pages = Math.ceil(total / limit);
+
+    return {
+      data,
+      pagination: { page, limit, total, pages },
+    };
+  };
+
+/**
+ * Create a new credential reference
+ */
+export const createCredentialReference =
+  (db: AgentsManageDatabaseClient) =>
+  async (params: CredentialReferenceInsert): Promise<CredentialReferenceSelect> => {
+    const now = new Date().toISOString();
+
+    const [credentialReference] = await db
+      .insert(credentialReferences)
+      .values({
+        ...params,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning();
+
+    return credentialReference;
+  };
+
+/**
+ * Update a credential reference
+ */
+export const updateCredentialReference =
+  (db: AgentsManageDatabaseClient) =>
+  async (params: {
+    scopes: ProjectScopeConfig;
+    id: string;
+    data: Partial<CredentialReferenceUpdate>;
+  }): Promise<CredentialReferenceWithResources | undefined> => {
+    const now = new Date().toISOString();
+
+    await db
+      .update(credentialReferences)
+      .set({
+        ...params.data,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          projectScopedWhere(credentialReferences, params.scopes),
+          eq(credentialReferences.id, params.id)
+        )
+      );
+
+    return await getCredentialReferenceWithResources(db)({
+      scopes: params.scopes,
+      id: params.id,
+    });
+  };
+
+/**
+ * Delete a credential reference
+ */
+export const deleteCredentialReference =
+  (db: AgentsManageDatabaseClient) =>
+  async (params: { scopes: ProjectScopeConfig; id: string }): Promise<boolean> => {
+    // First check if the credential reference exists
+    const existingCredential = await getCredentialReference(db)({
+      scopes: params.scopes,
+      id: params.id,
+    });
+
+    if (!existingCredential) {
+      return false;
+    }
+
+    await db
+      .delete(credentialReferences)
+      .where(
+        and(
+          projectScopedWhere(credentialReferences, params.scopes),
+          eq(credentialReferences.id, params.id)
+        )
+      );
+
+    // Verify deletion was successful
+    const deletedCredential = await getCredentialReference(db)({
+      scopes: params.scopes,
+      id: params.id,
+    });
+
+    return deletedCredential === undefined;
+  };
+
+/**
+ * Check if a credential reference exists
+ */
+export const hasCredentialReference =
+  (db: AgentsManageDatabaseClient) =>
+  async (params: { scopes: ProjectScopeConfig; id: string }): Promise<boolean> => {
+    const credential = await getCredentialReference(db)(params);
+    return credential !== null;
+  };
+
+/**
+ * Get credential reference by ID (simple version without tools)
+ */
+export const getCredentialReferenceById =
+  (db: AgentsManageDatabaseClient) =>
+  async (params: {
+    scopes: ProjectScopeConfig;
+    id: string;
+  }): Promise<CredentialReferenceSelect | null> => {
+    const result = await db.query.credentialReferences.findFirst({
+      where: and(
+        projectScopedWhere(credentialReferences, params.scopes),
+        eq(credentialReferences.id, params.id)
+      ),
+    });
+
+    return result || null;
+  };
+
+/**
+ * Count credential references for a tenant/project
+ */
+export const countCredentialReferences =
+  (db: AgentsManageDatabaseClient) =>
+  async (params: { scopes: ProjectScopeConfig }): Promise<number> => {
+    const result = await db
+      .select({ count: count() })
+      .from(credentialReferences)
+      .where(projectScopedWhere(credentialReferences, params.scopes));
+
+    const total = result[0]?.count || 0;
+    return typeof total === 'string' ? Number.parseInt(total, 10) : (total as number);
+  };
+
+/**
+ * Upsert a credential reference (create if it doesn't exist, update if it does).
+ * For user-scoped credentials (toolId + userId set), also checks the unique constraint pair.
+ * Uses application-level find-then-update since Doltgres does not support ON CONFLICT DO UPDATE.
+ */
+export const upsertCredentialReference =
+  (db: AgentsManageDatabaseClient) =>
+  async (params: { data: CredentialReferenceInsert }): Promise<CredentialReferenceSelect> => {
+    const scopes = { tenantId: params.data.tenantId, projectId: params.data.projectId };
+
+    // Check by ID first
+    const existingById = await getCredentialReference(db)({
+      scopes,
+      id: params.data.id,
+    });
+
+    if (existingById) {
+      const updated = await updateCredentialReference(db)({
+        scopes,
+        id: existingById.id,
+        data: {
+          name: params.data.name,
+          type: params.data.type,
+          credentialStoreId: params.data.credentialStoreId,
+          retrievalParams: params.data.retrievalParams,
+        },
+      });
+      if (!updated) {
+        throw new Error('Failed to update credential reference - no rows affected');
+      }
+      return updated;
+    }
+
+    // For user-scoped credentials, check by (toolId, userId) unique constraint
+    if (params.data.toolId && params.data.userId) {
+      const existingByToolUser = await getUserScopedCredentialReference(db)({
+        scopes,
+        toolId: params.data.toolId,
+        userId: params.data.userId,
+      });
+
+      if (existingByToolUser) {
+        const updated = await updateCredentialReference(db)({
+          scopes,
+          id: existingByToolUser.id,
+          data: {
+            name: params.data.name,
+            type: params.data.type,
+            credentialStoreId: params.data.credentialStoreId,
+            retrievalParams: params.data.retrievalParams,
+          },
+        });
+        if (!updated) {
+          throw new Error('Failed to update credential reference - no rows affected');
+        }
+        return updated;
+      }
+    }
+
+    try {
+      return await createCredentialReference(db)(params.data);
+    } catch (error) {
+      // TOCTOU race: a concurrent request inserted between our check and create.
+      // Retry as an update if this is a unique constraint violation on (toolId, userId).
+      if (isUniqueConstraintError(error) && params.data.toolId && params.data.userId) {
+        const raceWinner = await getUserScopedCredentialReference(db)({
+          scopes,
+          toolId: params.data.toolId,
+          userId: params.data.userId,
+        });
+
+        if (raceWinner) {
+          const updated = await updateCredentialReference(db)({
+            scopes,
+            id: raceWinner.id,
+            data: {
+              name: params.data.name,
+              type: params.data.type,
+              credentialStoreId: params.data.credentialStoreId,
+              retrievalParams: params.data.retrievalParams,
+            },
+          });
+          if (updated) return updated;
+        }
+      }
+      throw error;
+    }
+  };

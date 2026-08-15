@@ -1,0 +1,10 @@
+export { default as ArrayIcon } from './array.svg?react';
+export { default as BooleanIcon } from './boolean.svg?react';
+export { default as ChromePinIcon } from './chrome-pin.svg?react';
+export { default as ChromePuzzleIcon } from './chrome-puzzle.svg?react';
+export { default as EdgeArrow } from './edge-arrow.svg?react';
+export { default as EnumIcon } from './enum.svg?react';
+export { default as NumberIcon } from './number.svg?react';
+export { default as ObjectIcon } from './object.svg?react';
+export { default as SelectedEdgeArrow } from './selected-edge-arrow.svg?react';
+export { default as StringIcon } from './string.svg?react';

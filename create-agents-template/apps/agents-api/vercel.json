@@ -1,0 +1,5 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "hono",
+  "installCommand": "AGENT_FABRIC_QUICKSTART_EXPORT=1 pnpm install && pnpm --dir ../../ db:migrate"
+}

@@ -1,0 +1,11 @@
+import { functionTool } from '@agent-fabric/agents-sdk';
+
+export const emailSenderTool = functionTool({
+  inputSchema: {
+    type: 'object',
+    properties: {},
+  },
+  name: 'email-sender',
+  description: 'Send emails',
+  execute: () => ({ sent: true }),
+});

@@ -1,0 +1,266 @@
+import { and, asc, count, desc, eq, inArray } from 'drizzle-orm';
+import type { AgentsRunDatabaseClient } from '../../db/runtime/runtime-client';
+import { messages } from '../../db/runtime/runtime-schema';
+import type {
+  MessageInsert,
+  MessageUpdate,
+  MessageVisibility,
+  PaginationConfig,
+  ProjectScopeConfig,
+} from '../../types/index';
+import { projectScopedWhere } from '../manage/scope-helpers';
+
+export const getMessageById =
+  (db: AgentsRunDatabaseClient) =>
+  async (params: { scopes: ProjectScopeConfig; messageId: string }) => {
+    return db.query.messages.findFirst({
+      where: and(projectScopedWhere(messages, params.scopes), eq(messages.id, params.messageId)),
+    });
+  };
+
+export const listMessages =
+  (db: AgentsRunDatabaseClient) =>
+  async (params: { scopes: ProjectScopeConfig; pagination: PaginationConfig }) => {
+    const page = params.pagination?.page || 1;
+    const limit = Math.min(params.pagination?.limit || 10, 100);
+    const offset = (page - 1) * limit;
+
+    const query = db
+      .select()
+      .from(messages)
+      .where(projectScopedWhere(messages, params.scopes))
+      .limit(limit)
+      .offset(offset)
+      .orderBy(desc(messages.createdAt));
+
+    return await query;
+  };
+
+export const getMessagesByConversation =
+  (db: AgentsRunDatabaseClient) =>
+  async (params: {
+    scopes: ProjectScopeConfig;
+    conversationId: string;
+    pagination: PaginationConfig;
+  }) => {
+    const page = params.pagination?.page || 1;
+    const limit = Math.min(params.pagination?.limit || 10, 100);
+    const offset = (page - 1) * limit;
+
+    const query = db
+      .select()
+      .from(messages)
+      .where(
+        and(
+          projectScopedWhere(messages, params.scopes),
+          eq(messages.conversationId, params.conversationId)
+        )
+      )
+      .limit(limit)
+      .offset(offset)
+      .orderBy(desc(messages.createdAt));
+
+    return await query;
+  };
+
+/**
+ * Batch-fetch the earliest `user` message for each of the given conversations in a single
+ * query (Postgres `DISTINCT ON`), returning one row per conversation.
+ *
+ * Set-based alternative to calling {@link getMessagesByConversation} once per conversation
+ * and reducing in JS, which fanned out two connection acquisitions per conversation and
+ * exhausted the runtime DB pool when enriching large evaluation-result sets.
+ */
+export const getFirstUserMessageByConversations =
+  (db: AgentsRunDatabaseClient) =>
+  async (params: { scopes: ProjectScopeConfig; conversationIds: string[] }) => {
+    if (params.conversationIds.length === 0) {
+      return [];
+    }
+
+    return await db
+      .selectDistinctOn([messages.conversationId], {
+        conversationId: messages.conversationId,
+        content: messages.content,
+      })
+      .from(messages)
+      .where(
+        and(
+          projectScopedWhere(messages, params.scopes),
+          inArray(messages.conversationId, params.conversationIds),
+          eq(messages.role, 'user')
+        )
+      )
+      .orderBy(messages.conversationId, asc(messages.createdAt), asc(messages.id));
+  };
+
+/**
+ * Batch-fetch the latest assistant/agent message for each of the given conversations in a
+ * single query (Postgres `DISTINCT ON`), returning one row per conversation.
+ *
+ * Set-based alternative to the per-conversation lookup used when enriching dataset-run items
+ * with their agent output.
+ */
+export const getLastAssistantMessageByConversations =
+  (db: AgentsRunDatabaseClient) =>
+  async (params: { scopes: ProjectScopeConfig; conversationIds: string[] }) => {
+    if (params.conversationIds.length === 0) {
+      return [];
+    }
+
+    return await db
+      .selectDistinctOn([messages.conversationId], {
+        conversationId: messages.conversationId,
+        content: messages.content,
+      })
+      .from(messages)
+      .where(
+        and(
+          projectScopedWhere(messages, params.scopes),
+          inArray(messages.conversationId, params.conversationIds),
+          inArray(messages.role, ['assistant', 'agent'])
+        )
+      )
+      .orderBy(messages.conversationId, desc(messages.createdAt), desc(messages.id));
+  };
+
+export const getMessagesByTask =
+  (db: AgentsRunDatabaseClient) =>
+  async (params: { scopes: ProjectScopeConfig; taskId: string; pagination: PaginationConfig }) => {
+    const page = params.pagination?.page || 1;
+    const limit = Math.min(params.pagination?.limit || 10, 100);
+    const offset = (page - 1) * limit;
+
+    const query = db
+      .select()
+      .from(messages)
+      .where(and(projectScopedWhere(messages, params.scopes), eq(messages.taskId, params.taskId)))
+      .limit(limit)
+      .offset(offset)
+      .orderBy(asc(messages.createdAt));
+
+    return await query;
+  };
+
+export const getVisibleMessages =
+  (db: AgentsRunDatabaseClient) =>
+  async (params: {
+    scopes: ProjectScopeConfig;
+    conversationId: string;
+    visibility?: MessageVisibility[];
+    pagination: PaginationConfig;
+  }) => {
+    const page = params.pagination?.page || 1;
+    const limit = Math.min(params.pagination?.limit || 10, 100);
+    const offset = (page - 1) * limit;
+
+    const visibilityFilter = params.visibility || ['user-facing'];
+
+    const query = db
+      .select()
+      .from(messages)
+      .where(
+        and(
+          projectScopedWhere(messages, params.scopes),
+          eq(messages.conversationId, params.conversationId),
+          inArray(messages.visibility, visibilityFilter)
+        )
+      )
+      .limit(limit)
+      .offset(offset)
+      .orderBy(asc(messages.createdAt));
+
+    return await query;
+  };
+
+export const createMessage =
+  (db: AgentsRunDatabaseClient) =>
+  async (params: {
+    scopes: ProjectScopeConfig;
+    data: Omit<MessageInsert, 'tenantId' | 'projectId'>;
+  }) => {
+    const { scopes, data } = params;
+    const now = new Date().toISOString();
+
+    const [created] = await db
+      .insert(messages)
+      .values({
+        ...data,
+        tenantId: scopes.tenantId,
+        projectId: scopes.projectId,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning();
+
+    return created;
+  };
+
+export const updateMessage =
+  (db: AgentsRunDatabaseClient) =>
+  async (params: { scopes: ProjectScopeConfig; messageId: string; data: MessageUpdate }) => {
+    const now = new Date().toISOString();
+
+    const [updated] = await db
+      .update(messages)
+      .set({
+        ...params.data,
+        updatedAt: now,
+      })
+      .where(and(projectScopedWhere(messages, params.scopes), eq(messages.id, params.messageId)))
+      .returning();
+
+    return updated;
+  };
+
+export const deleteMessage =
+  (db: AgentsRunDatabaseClient) =>
+  async (params: { scopes: ProjectScopeConfig; messageId: string }) => {
+    const [deleted] = await db
+      .delete(messages)
+      .where(and(projectScopedWhere(messages, params.scopes), eq(messages.id, params.messageId)))
+      .returning();
+
+    return deleted;
+  };
+
+export const countMessagesByConversation =
+  (db: AgentsRunDatabaseClient) =>
+  async (params: { scopes: ProjectScopeConfig; conversationId: string }) => {
+    const result = await db
+      .select({ count: count() })
+      .from(messages)
+      .where(
+        and(
+          projectScopedWhere(messages, params.scopes),
+          eq(messages.conversationId, params.conversationId)
+        )
+      );
+
+    const total = result[0]?.count || 0;
+    return typeof total === 'string' ? Number.parseInt(total, 10) : (total as number);
+  };
+
+export const countVisibleMessages =
+  (db: AgentsRunDatabaseClient) =>
+  async (params: {
+    scopes: ProjectScopeConfig;
+    conversationId: string;
+    visibility?: MessageVisibility[];
+  }) => {
+    const visibilityFilter = params.visibility || ['user-facing'];
+
+    const result = await db
+      .select({ count: count() })
+      .from(messages)
+      .where(
+        and(
+          projectScopedWhere(messages, params.scopes),
+          eq(messages.conversationId, params.conversationId),
+          inArray(messages.visibility, visibilityFilter)
+        )
+      );
+
+    const total = result[0]?.count || 0;
+    return typeof total === 'string' ? Number.parseInt(total, 10) : (total as number);
+  };
