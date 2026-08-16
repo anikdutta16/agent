@@ -1,10 +1,10 @@
 import './App.css';
-import { InkeepEmbeddedChat } from '@agent-fabric/agents-ui';
+import { AgentFabricEmbeddedChat } from './chat-ui';
 
 function App() {
   return (
     <div className="agent-fabric-chat-container">
-      <InkeepEmbeddedChat
+      <AgentFabricEmbeddedChat
         baseSettings={{
           primaryBrandColor: '#3784ff',
         }}

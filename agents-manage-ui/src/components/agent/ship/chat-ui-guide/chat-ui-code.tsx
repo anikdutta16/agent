@@ -1,7 +1,7 @@
-import type { InkeepBaseSettings } from '@agent-fabric/agents-ui/types';
 import { Tabs as TabsPrimitive } from 'radix-ui';
 import { Streamdown } from 'streamdown';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import type { AgentFabricBaseSettings } from '@/lib/chat-ui';
 import { indentJson, replaceTemplatePlaceholders, serializeExtraSettings } from '../utils';
 import { ChatUIComponent } from './chat-ui-preview-form';
 import {
@@ -16,7 +16,7 @@ import {
 
 interface ChatUICodeProps {
   component: ChatUIComponent;
-  baseSettings: InkeepBaseSettings;
+  baseSettings: AgentFabricBaseSettings;
   extraAiChatSettings: Record<string, unknown>;
   baseUrl: string;
 }

@@ -1,11 +1,11 @@
 'use client';
 
-import { InkeepEmbeddedChat } from '@agent-fabric/agents-ui';
 import { useEffect, useState } from 'react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { AGENT_FABRIC_BRAND_COLOR } from '@/constants/theme';
 import { fetchConversationHistoryVercelAction } from '@/lib/actions/conversations';
 import type { VercelMessage } from '@/lib/api/conversations-client';
+import { AgentFabricEmbeddedChat } from '@/lib/chat-ui';
 import { css } from '@/lib/utils';
 import { hideTaglineStyles } from '@/lib/widget-styles';
 
@@ -31,7 +31,7 @@ interface ConversationTranscriptProps {
 
 type FetchedConversation = NonNullable<
   NonNullable<
-    React.ComponentProps<typeof InkeepEmbeddedChat>['aiChatSettings']
+    React.ComponentProps<typeof AgentFabricEmbeddedChat>['aiChatSettings']
   >['fetchedConversation']
 >;
 
@@ -96,7 +96,7 @@ export function ConversationTranscript({
 
   return (
     <div className="h-full">
-      <InkeepEmbeddedChat
+      <AgentFabricEmbeddedChat
         variant="no-shadow"
         baseSettings={{
           primaryBrandColor: AGENT_FABRIC_BRAND_COLOR,

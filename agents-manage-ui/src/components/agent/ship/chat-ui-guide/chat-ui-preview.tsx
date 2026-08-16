@@ -1,9 +1,14 @@
-import { InkeepChatButton, InkeepEmbeddedChat, InkeepSidebarChat } from '@agent-fabric/agents-ui';
-import type { InkeepAIChatSettings, InkeepBaseSettings } from '@agent-fabric/agents-ui/types';
 import { SidebarIcon } from 'lucide-react';
 import { useParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { useTempApiKey } from '@/hooks/use-temp-api-key';
+import {
+  type AgentFabricAIChatSettings,
+  type AgentFabricBaseSettings,
+  AgentFabricChatButton,
+  AgentFabricEmbeddedChat,
+  AgentFabricSidebarChat,
+} from '@/lib/chat-ui';
 import { css } from '@/lib/utils';
 import { ChatUIComponent } from './chat-ui-preview-form';
 
@@ -24,14 +29,14 @@ const styleOverrides = css`
 
 interface ChatUIPreviewProps {
   component: ChatUIComponent;
-  baseSettings: InkeepBaseSettings;
-  aiChatSettings: InkeepAIChatSettings;
+  baseSettings: AgentFabricBaseSettings;
+  aiChatSettings: AgentFabricAIChatSettings;
   shouldEmitDataOperations: boolean;
 }
 const componentMap = {
-  [ChatUIComponent.EMBEDDED_CHAT]: InkeepEmbeddedChat,
-  [ChatUIComponent.CHAT_BUTTON]: InkeepChatButton,
-  [ChatUIComponent.SIDEBAR_CHAT]: InkeepSidebarChat,
+  [ChatUIComponent.EMBEDDED_CHAT]: AgentFabricEmbeddedChat,
+  [ChatUIComponent.CHAT_BUTTON]: AgentFabricChatButton,
+  [ChatUIComponent.SIDEBAR_CHAT]: AgentFabricSidebarChat,
 };
 
 export function ChatUIPreview({

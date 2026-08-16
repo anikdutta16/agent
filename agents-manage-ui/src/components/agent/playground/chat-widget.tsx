@@ -1,5 +1,4 @@
 'use client';
-import { InkeepEmbeddedChat } from '@agent-fabric/agents-ui';
 import { type Dispatch, useEffect, useRef, useState } from 'react';
 import { DynamicComponentRenderer } from '@/components/dynamic-component-renderer';
 import type { ConversationDetail } from '@/components/traces/timeline/types';
@@ -9,6 +8,7 @@ import { usePostHog } from '@/contexts/posthog';
 import { useRuntimeConfig } from '@/contexts/runtime-config';
 import { useAuthSession } from '@/hooks/use-auth';
 import { useTempApiKey } from '@/hooks/use-temp-api-key';
+import { AgentFabricEmbeddedChat } from '@/lib/chat-ui';
 import { useDataComponentsQuery } from '@/lib/query/data-components';
 import { css } from '@/lib/utils';
 import { hideTaglineStyles } from '@/lib/widget-styles';
@@ -152,7 +152,7 @@ export function ChatWidget({
   return (
     <div className="h-full flex flex-row gap-4">
       <div className="flex-1 min-w-0 h-full">
-        <InkeepEmbeddedChat
+        <AgentFabricEmbeddedChat
           baseSettings={{
             shouldBypassCaptcha: true,
             ...(playgroundAppId && tempApiKey

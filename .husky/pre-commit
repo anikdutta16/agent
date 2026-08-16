@@ -27,3 +27,7 @@ if [ ! -x ./node_modules/.bin/lint-staged ]; then
 fi
 
 pnpm exec lint-staged
+
+# Whole-repo brand check. Run outside lint-staged so it never receives a file
+# list: it scans tracked and untracked files itself in well under a second.
+node scripts/check-brand.mjs

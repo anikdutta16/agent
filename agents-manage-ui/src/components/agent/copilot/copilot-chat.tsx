@@ -1,6 +1,5 @@
 'use client';
 
-import { InkeepSidebarChat } from '@agent-fabric/agents-ui';
 import { useQueryClient } from '@tanstack/react-query';
 import { Loader2, RefreshCw } from 'lucide-react';
 import { useParams } from 'next/navigation';
@@ -21,6 +20,7 @@ import { useOAuthLogin } from '@/hooks/use-oauth-login';
 import { useSidePane } from '@/hooks/use-side-pane';
 import { createCoPilotRunAction } from '@/lib/actions/improvements';
 import { getFullProjectAction } from '@/lib/actions/project-full';
+import { AgentFabricSidebarChat } from '@/lib/chat-ui';
 import { projectQueryKeys } from '@/lib/query/keys/projects';
 import { useMcpToolsQuery } from '@/lib/query/mcp-tools';
 import { sentry } from '@/lib/sentry';
@@ -223,7 +223,7 @@ export function CopilotChat() {
   return (
     <div className="h-full flex flex-row gap-4">
       <div className="flex-1 min-w-0 h-full">
-        <InkeepSidebarChat
+        <AgentFabricSidebarChat
           openSettings={{
             isOpen: isOpen,
             onOpenChange: setIsOpen,

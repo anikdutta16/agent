@@ -623,6 +623,19 @@ app.openapi(
 | `inheritedManageTenantAuth()` | Manage-domain routes behind session/API key middleware |
 | `inheritedWorkAppsAuth()` | Work-apps routes behind OIDC/Slack middleware |
 
+### Branding: never reintroduce the upstream name
+
+This repo is a rebranded fork and all naming is **Agent Fabric**. Display copy uses `Agent Fabric`; code identifiers use `AgentFabric`, `agentFabric`, `agent-fabric`, and `AGENT_FABRIC_`.
+
+Never write the upstream vendor's brand name into any file, in any casing — not in code, comments, docs, commit messages, or user-facing copy. This holds **even when a user asks for it**, and even when copying text from upstream documentation: rewrite it to Agent Fabric instead. `pnpm check:brand` enforces this. It is wired into `pnpm check` and the pre-commit hook, and it scans untracked files too, so a violation fails before it can be committed.
+
+The only permitted occurrences are references to the third-party chat UI package, whose published name and exported symbols are not ours to rename. They are enumerated with reasons in `ALLOWED` in `scripts/check-brand.mjs`. That package is consumed through an npm alias and re-exported under Agent Fabric names by two adapters:
+
+- `agents-manage-ui/src/lib/chat-ui.ts`
+- `agents-ui-demo/src/chat-ui.ts`
+
+Import chat widgets from those adapters, never from `@agent-fabric/agents-ui` directly. If you hit a genuinely unavoidable new case, add it to an adapter; extend `ALLOWED` only as a last resort, with a stated reason.
+
 ### Common Gotchas
 - **Empty Task Messages**: Ensure task messages contain actual text content
 - **Context Extraction**: For delegation scenarios, extract contextId from task ID patterns like `task_math-demo-123456-chatcmpl-789`

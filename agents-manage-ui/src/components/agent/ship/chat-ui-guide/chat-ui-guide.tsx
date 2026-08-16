@@ -1,9 +1,9 @@
-import type { InkeepAIChatSettings, InkeepBaseSettings } from '@agent-fabric/agents-ui/types';
 import { CodeIcon, EyeIcon } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { AGENT_FABRIC_BRAND_COLOR, DOCS_BASE_URL } from '@/constants/theme';
 import { useRuntimeConfig } from '@/contexts/runtime-config';
+import type { AgentFabricAIChatSettings, AgentFabricBaseSettings } from '@/lib/chat-ui';
 import { DocsLink, Header } from '../guide-header';
 import { ChatUICode } from './chat-ui-code';
 import { ChatUIPreview } from './chat-ui-preview';
@@ -11,8 +11,8 @@ import { ChatUIComponent, ChatUIPreviewForm } from './chat-ui-preview-form';
 
 interface ChatUIProps {
   component: ChatUIComponent;
-  baseSettings: InkeepBaseSettings;
-  aiChatSettings: InkeepAIChatSettings;
+  baseSettings: AgentFabricBaseSettings;
+  aiChatSettings: AgentFabricAIChatSettings;
   shouldEmitDataOperations: boolean;
 }
 
